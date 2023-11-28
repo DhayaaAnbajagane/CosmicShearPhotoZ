@@ -156,7 +156,9 @@ class TrainRunner:
         with h5py.File(path) as f:
             FG_Mask = f['FLAGS_FOREGROUND'][:] == 0
             
-            if 'ra' in f.keys():
+            if 'true_ra' in f.keys():
+                DR3_1_1_only = (f['true_ra'][:] < 180) & (f['true_dec'][:] > -25)
+            elif 'ra' in f.keys():
                 DR3_1_1_only = (f['ra'][:] < 180) & (f['dec'][:] > -25)
             elif 'RA' in f.keys():
                 DR3_1_1_only = (f['RA'][:] < 180) & (f['DEC'][:] > -25)
@@ -314,7 +316,7 @@ done
 
 class BinRunner(TrainRunner):    
 
-    def make_bins(self, balrog_classified_df, z_bins = [0.0, 0.358, 0.631, 0.872, 2.0]):
+    def make_bins(self, balrog_classified_df, z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
         
         Mask = (self.get_wl_sample_mask(self.balrog_catalog_path) & 
                 self.get_foreground_mask(self.balrog_catalog_path) & 
@@ -322,18 +324,22 @@ class BinRunner(TrainRunner):
 
         with h5py.File(self.balrog_catalog_path, 'r') as f:
             
+#             Mask = Mask & (f['Z'][:] > 0)
             Balrog_df = pd.DataFrame()
             Balrog_df['ID'] = f['ID'][:][Mask]
             Balrog_df['Z']  = f['Z'][:][Mask]
             Balrog_df['id'] = f['id'][:][Mask]
             Balrog_df['tilename'] = f['tilename'][:][Mask]
+            Balrog_df['true_ra']  = f['true_ra'][:][Mask]
+            Balrog_df['true_dec'] = f['true_dec'][:][Mask]
+            
+        print(np.sum(Mask))
 
-#         assert len(Balrog_df) == len(balrog_classified_df), "Balrog dataframes %d != %d" %(len(Balrog_df), len(balrog_classified_df))
+        #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
+        Balrog_df = pd.merge(Balrog_df, balrog_classified_df, how = 'left', 
+                             on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], validate = "1:1")
 
-        #This treats "balrog_classified_df" as superior, meaning we only use Balrog galaxies that
-        #were chosen to be classified. 
-        Balrog_df = pd.merge(Balrog_df, balrog_classified_df, how = 'right', on = ['id', 'tilename', 'ID'])
-
+        print(len(Balrog_df))
         #For each wide cell, c_hat, find the distribution of deep galaxies in it
         SOMsize   = int(np.ceil(np.sqrt(Balrog_df['cell'].max())))
         Wide_bins = np.zeros(SOMsize * SOMsize, dtype = int).flatten()
@@ -359,6 +365,7 @@ class BinRunner(TrainRunner):
                 balrog_classified_df, deep_classified_df, wide_classified_df):
 
 
+        MY_RESULT = {}
         #-------------------------- READ OUT ALL DEEP QUANTITIES --------------------------
         f = pd.read_csv(self.deep_catalog_path).reset_index(drop = True)
         deep_was_detected = self.get_deep_mask(self.deep_catalog_path, self.balrog_catalog_path)
@@ -376,7 +383,7 @@ class BinRunner(TrainRunner):
 
 
         #-------------------------- READ OUT ALL BALROG QUANTITIES --------------------------
-        selection = self.get_wl_sample_mask(self.balrog_catalog_path) 
+        selection = self.get_wl_sample_mask(self.balrog_catalog_path)
         purity    = self.get_balrog_contam_mask(self.balrog_catalog_path) & self.get_foreground_mask(self.balrog_catalog_path)
         dgamma = 2*0.01
         with h5py.File(self.balrog_catalog_path, 'r') as f:
@@ -386,32 +393,37 @@ class BinRunner(TrainRunner):
             Balrog_df['w']  = np.ones(len(Balrog_df)) #f['mcal_g_w'][:][Mask]
             R11       = (f['mcal_g_1p'][:][:, 0] - f['mcal_g_1m'][:][:, 0])/dgamma
             R22       = (f['mcal_g_2p'][:][:, 1] - f['mcal_g_2m'][:][:, 1])/dgamma
-            Balrog_df['R']  = (R11 + R22)/2 #Average the two responses.
+            Balrog_df['R']  = np.ones(len(Balrog_df)) #(R11 + R22)/2 #Average the two responses.
             Balrog_df['Z']  = f['Z'][:]
 
             Balrog_df['id']        = f['id'][:]
             Balrog_df['tilename']  = f['tilename'][:]
             Balrog_df['selection'] = selection & (f['detected'][:] == 1)
             Balrog_df['purity']    = purity
+            Balrog_df['true_ra']   = f['true_ra'][:]
+            Balrog_df['true_dec']  = f['true_dec'][:]
 
             Balrog_df = Balrog_df[Balrog_df['purity'] == True] #This needs to be happen at the very start
-            Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID']], 
-                                 how = 'left', on = ['id', 'tilename', 'ID'], suffixes = (None, '_classified'))
+            Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], 
+                                 how = 'left', on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], suffixes = (None, '_classified'), 
+                                 validate = "1:1")
 
         
         #-------------------------- READ OUT ALL WIDE QUANTITIES --------------------------
         Mask = self.get_wl_sample_mask(self.wide_catalog_path) & self.get_foreground_mask(self.wide_catalog_path)
+        dgamma = 2*0.01
         with h5py.File(self.wide_catalog_path, 'r') as f:
 
             Wide_df = pd.DataFrame()
             Wide_df['id'] = f['id'][:][Mask]
-            Wide_df['w']  = f['mcal_g_w'][:][Mask]
+            Wide_df['w']  = np.ones(len(Wide_df)) #f['mcal_g_w'][:][Mask]
             R11 = (f['mcal_g_1p'][:][Mask, 0] - f['mcal_g_1m'][:][Mask, 0])/dgamma
             R22 = (f['mcal_g_2p'][:][Mask, 1] - f['mcal_g_2m'][:][Mask, 1])/dgamma
-            Wide_df['R']  = (R11 + R22)/2 #Average the two responses.
+            Wide_df['R']  = np.ones(len(Wide_df)) #(R11 + R22)/2 #Average the two responses.
 
 #             assert len(Wide_df) == len(wide_classified_df), "Wide dataframes %d != %d" %(len(Wide_df), len(wide_classified_df))
-            Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']], how = 'right', on = 'id', suffixes = (None, '_classified'))
+            Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']], 
+                               how = 'inner', on = 'id', suffixes = (None, '_classified'), validate = "1:1")
             
         
         #-------------------------- MAKE THE BINNING --------------------------
@@ -420,7 +432,9 @@ class BinRunner(TrainRunner):
         WIDESOMShape  = Wide_bins.shape
         Wide_bins     = Wide_bins.flatten()
 
-        DEEPSOMsize   = int(np.ceil(np.sqrt(Deep_df['cell'].max())))
+        MY_RESULT['Wide_bins'] = Wide_bins
+        
+        DEEPSOMsize   = int(np.ceil(np.sqrt(np.max(Deep_df['cell'].values))))
         
         print("DEEP SOM SIZE", DEEPSOMsize)
         print("WIDE SOM SIZE", WIDESOMShape)
@@ -431,17 +445,23 @@ class BinRunner(TrainRunner):
         print(np.round(np.bincount(Wide_bins[Wide_df['cell'].values.astype(int)])/Wide_df['cell'].values.size, 2))
         
         #COMPUTE THE FIRST TERM: WIDE SOM OCCUPATION
-        p_chat_given_shat_bhat = np.bincount(Wide_df['cell'].values.astype(int), weights = wide_weight, minlength = WIDESOMShape[0]**2)/np.sum(wide_weight)
+        p_chat_given_shat = np.bincount(Wide_df['cell'].values.astype(int), weights = wide_weight, 
+                                        minlength = WIDESOMShape[0]**2)/np.sum(wide_weight)
         
-
+        MY_RESULT['p_chat_given_shat'] = p_chat_given_shat
+        
         #COMPUTE THE SECOND TERM: REDSHIFT DIST. PER DEEP CELL
         Balrog_df_with_deep = pd.merge(Balrog_df, Deep_df[['ID',  'cell']], on = 'ID', suffixes = (None, '_deep'), how = 'left')
         Balrog_df_only_det  = Balrog_df_with_deep[Balrog_df_with_deep['selection'] == True]
+        
         Balrog_total_injs   = Balrog_df[['ID', 'selection']].rename({'selection' : 'Ninj'}, axis = 1).groupby('ID').count()
         Balrog_total_dets   = Balrog_df[['ID', 'selection']].rename({'selection' : 'Ndet'}, axis = 1).groupby('ID').sum()
+        
         Balrog_df_only_det  = pd.merge(Balrog_df_only_det, Balrog_total_injs, on = 'ID', how = 'left',)
         Balrog_df_only_det  = pd.merge(Balrog_df_only_det, Balrog_total_dets, on = 'ID', how = 'left',)
+        
         weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
+        
         p_z_given_c_bhat_shat  = np.zeros([len(z_bins) - 1, DEEPSOMsize * DEEPSOMsize, z_grid.size - 1])
         for b_i in tqdm(range(len(z_bins) - 1), desc = 'compute p_z_per_cell'):
             for c_i in np.arange(DEEPSOMsize * DEEPSOMsize):
@@ -452,25 +472,46 @@ class BinRunner(TrainRunner):
 
                 p_z_given_c_bhat_shat[b_i, c_i, :] = np.histogram(Balrog_df_only_det['Z'].values[selection], z_grid, weights = weight[selection])[0]
                 
+                Norm = np.sum(p_z_given_c_bhat_shat[b_i, c_i, :])
+                assert Norm >= 0, "Norm can't be negative"
+                
+                if Norm == 0: continue
+                
                 p_z_given_c_bhat_shat[b_i, c_i, :] /= np.sum(p_z_given_c_bhat_shat[b_i, c_i, :])
                 
-
+        MY_RESULT['p_z_given_c_bhat_shat'] = p_z_given_c_bhat_shat
+#         return Balrog_df_only_det, weight, p_z_given_c_bhat_shat
 
         #COMPUTE THE THIRD TERM: TRANSFER MATRIX
-        p_c_chat_given_shat = np.zeros([Wide_bins.size, DEEPSOMsize**2])        
-        p_chat_given_shat   = np.bincount(Balrog_df_only_det['cell'].values.astype(int), weights = weight, minlength = WIDESOMShape[0]*WIDESOMShape[1])
+        p_chat_c_given_shat = np.zeros([Wide_bins.size, DEEPSOMsize**2])        
+        
+        Balrog_df_only_det  = Balrog_df_only_det[(Balrog_df_only_det['cell'] >= 0) & (Balrog_df_only_det['cell_deep'] >= 0)]
+        weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
+        p_chat_given_shat   = np.bincount(Balrog_df_only_det['cell'].values.astype(int), 
+                                          weights = weight, minlength = WIDESOMShape[0]*WIDESOMShape[1])
+        
+        MY_RESULT['p_chat_given_shat'] = p_chat_given_shat
+        
         for chat_i in tqdm(np.arange(Wide_bins.size), desc = 'compute transfer matrix'):
             wide_selection = Balrog_df_only_det['cell'].values.astype(int) == chat_i
-            p_c_chat_given_shat[chat_i, :] = np.bincount(Balrog_df_only_det['cell_deep'].values.astype(int), weights = weight, minlength = DEEPSOMsize**2)
+            
+            p_chat_c_given_shat[chat_i, :] = np.bincount(Balrog_df_only_det['cell_deep'].values[wide_selection].astype(int), 
+                                                         weights = weight[wide_selection], minlength = DEEPSOMsize**2)
 
-        p_c_given_chat_shat = p_c_chat_given_shat[:, None]/p_chat_given_shat
+        MY_RESULT['p_chat_c_given_shat'] = p_chat_c_given_shat
+        p_c_given_chat_shat = p_chat_c_given_shat/p_chat_given_shat[:, None]
+        
+        MY_RESULT['p_c_given_chat_shat'] = p_c_given_chat_shat
 
 
-        #PUT IT TOGETHER TO GET THE n(z)
-        p_z_given_bhat_shat = p_z_given_c_bhat_shat * p_c_given_chat_shat * p_chat_given_shat_bhat
-        p_z_given_bhat_shat = np.sum(p_z_given_bhat_shat, axis = 0)
+        p_z_given_bhat_shat = np.sum(p_z_given_c_bhat_shat * 
+                                     np.sum(p_c_given_chat_shat * p_chat_given_shat[:, None], axis = 0)[None, :, None], 
+                                     axis = 1)
+        
+        
+        MY_RESULT['p_z_given_bhat_shat'] = p_z_given_bhat_shat
 
-        return p_z_given_bhat_shat
+        return p_z_given_bhat_shat, MY_RESULT
 
     
     def postprocess_nz(self, z, list_of_nz):
