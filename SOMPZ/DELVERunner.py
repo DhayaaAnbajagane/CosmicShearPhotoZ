@@ -72,7 +72,55 @@ class TrainRunner:
         deep_was_detected = np.isin(ID, balrog_ID)
 
         return deep_was_detected
+    
+    def deep_cuts(self, deep_dataframe):
+        '''
+        places color cuts on deep field catalog
+        Credit: Alex Alarcon
+        '''
 
+        #Mask flagged regions -- not needed, saved deep catalog already has flag cuts in place
+        mask  = df.MASK_FLAGS_NIR==0
+        mask &= df.MASK_FLAGS==0
+        mask &= df.FLAGS_NIR==0
+        mask &= df.FLAGS==0
+        mask &= df.FLAGSTR=="b'ok'"
+        mask &= df.FLAGSTR_NIR=="b'ok'"
+        #df = df[mask]
+        df = df.drop(columns=[
+            "MASK_FLAGS",
+            "MASK_FLAGS_NIR",
+            "FLAGS",
+            "FLAGS_NIR",
+            "FLAGSTR",
+            "FLAGSTR_NIR",
+        ])
+        deep_bands_ = ["U","G","R","I","Z","J","H","KS"]
+        # remove crazy colors, defined as two 
+        # consecutive colors (e.g u-g, g-r, r-i, etc) 
+        # that have a value smaler than -1
+        mags_d = np.zeros((len(df),len(deep_bands_)))
+        magerrs_d = np.zeros((len(df),len(deep_bands_)))
+
+        for i,band in enumerate(deep_bands_):
+            #print(i,band)
+            mags_d[:,i] = flux2mag(df['BDF_FLUX_DERED_CALIB_%s'%band])
+
+        colors = np.zeros((len(df),len(deep_bands_)-1))
+        for i in range(len(deep_bands_)-1):
+            colors[:,i] = mags_d[:,i] - mags_d[:,i+1]
+
+        normal_colors = np.mean(colors > -1, axis=1) == 1
+        normal_colors.sum()
+
+        i = flux2mag(df.BDF_FLUX_DERED_CALIB_I.values)
+        r = flux2mag(df.BDF_FLUX_DERED_CALIB_R.values)
+        z = flux2mag(df.BDF_FLUX_DERED_CALIB_Z.values)
+        k = flux2mag(df.BDF_FLUX_DERED_CALIB_KS.values)
+
+    return mask & (flux2mag(df.BDF_FLUX_DERED_CALIB_I.values) < 25) & (normal_colors)&((z-k) > 0.5 * (r-z))
+
+    
     def get_wide_fluxes(self, path):
 
         Mask = self.get_wl_sample_mask(path) & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
@@ -327,23 +375,31 @@ class BinRunner(TrainRunner):
 #             Mask = Mask & (f['Z'][:] > 0)
             Balrog_df = pd.DataFrame()
             Balrog_df['ID'] = f['ID'][:][Mask]
-            Balrog_df['Z']  = f['Z'][:][Mask]
+            Balrog_df['Z']  = f['Z'][:][Mask].astype('float64')
             Balrog_df['id'] = f['id'][:][Mask]
             Balrog_df['tilename'] = f['tilename'][:][Mask]
-            Balrog_df['true_ra']  = f['true_ra'][:][Mask]
-            Balrog_df['true_dec'] = f['true_dec'][:][Mask]
+            Balrog_df['true_ra']  = f['true_ra'][:][Mask].astype('float64')
+            Balrog_df['true_dec'] = f['true_dec'][:][Mask].astype('float64')
             
-        print(np.sum(Mask))
-
+        '''
+        DEEP CUTS SOMEWHERE ELSE
+        '''
+        Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
+        
         #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
         Balrog_df = pd.merge(Balrog_df, balrog_classified_df, how = 'left', 
                              on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], validate = "1:1")
 
         print(len(Balrog_df))
+        
+#         return Balrog_df
+        
         #For each wide cell, c_hat, find the distribution of deep galaxies in it
         SOMsize   = int(np.ceil(np.sqrt(Balrog_df['cell'].max())))
         Wide_bins = np.zeros(SOMsize * SOMsize, dtype = int).flatten()
         
+        print(z_bins)
         for i in tqdm(range(Wide_bins.size), desc = 'Assign chat to bins'):
 
             Balrog_in_this_cell = Balrog_df['cell'].values == i #Find all balrog injections in this cell
