@@ -6,6 +6,19 @@ import os
 import joblib
 import glob
 from tqdm import tqdm
+import time
+
+
+#For keeping track of how long steps take
+def timeit(func):
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        total_time = end_time - start_time
+        print(f"Function {func.__name__} took {total_time:.5} seconds to run.")
+        return result
+    return wrapper
 
 class TrainRunner:
 
@@ -54,6 +67,7 @@ class TrainRunner:
 
         return flux, flux_err, ID
     
+    @timeit
     def get_deep_mask(self, path, balrog_path):
 
         f  = pd.read_csv(path)
@@ -73,54 +87,53 @@ class TrainRunner:
 
         return deep_was_detected
     
-    def deep_cuts(self, deep_dataframe):
+    @timeit
+    def get_deep_sample_cuts(self, deep_catalog):
         '''
         places color cuts on deep field catalog
         Credit: Alex Alarcon
         '''
 
         #Mask flagged regions -- not needed, saved deep catalog already has flag cuts in place
-        mask  = df.MASK_FLAGS_NIR==0
-        mask &= df.MASK_FLAGS==0
-        mask &= df.FLAGS_NIR==0
-        mask &= df.FLAGS==0
-        mask &= df.FLAGSTR=="b'ok'"
-        mask &= df.FLAGSTR_NIR=="b'ok'"
+        mask  = deep_catalog.MASK_FLAGS_NIR==0
+        mask &= deep_catalog.MASK_FLAGS==0
+        mask &= deep_catalog.FLAGS_NIR==0
+        mask &= deep_catalog.FLAGS==0
+        mask &= deep_catalog.FLAGSTR=="b'ok'"
+        mask &= deep_catalog.FLAGSTR_NIR=="b'ok'"
         #df = df[mask]
-        df = df.drop(columns=[
-            "MASK_FLAGS",
-            "MASK_FLAGS_NIR",
-            "FLAGS",
-            "FLAGS_NIR",
-            "FLAGSTR",
-            "FLAGSTR_NIR",
-        ])
+        
         deep_bands_ = ["U","G","R","I","Z","J","H","KS"]
         # remove crazy colors, defined as two 
         # consecutive colors (e.g u-g, g-r, r-i, etc) 
         # that have a value smaler than -1
-        mags_d = np.zeros((len(df),len(deep_bands_)))
-        magerrs_d = np.zeros((len(df),len(deep_bands_)))
+        mags_d = np.zeros((len(deep_catalog),len(deep_bands_)))
+        magerrs_d = np.zeros((len(deep_catalog),len(deep_bands_)))
 
+        def flux2mag(flux):
+            
+            with np.errstate(divide = 'ignore', invalid = 'ignore'):
+                return 30 - 2.5*np.log10(flux)
+        
         for i,band in enumerate(deep_bands_):
             #print(i,band)
-            mags_d[:,i] = flux2mag(df['BDF_FLUX_DERED_CALIB_%s'%band])
+            mags_d[:,i] = flux2mag(deep_catalog['BDF_FLUX_DERED_CALIB_%s'%band].values)
 
-        colors = np.zeros((len(df),len(deep_bands_)-1))
+        colors = np.zeros((len(deep_catalog),len(deep_bands_)-1))
         for i in range(len(deep_bands_)-1):
             colors[:,i] = mags_d[:,i] - mags_d[:,i+1]
 
         normal_colors = np.mean(colors > -1, axis=1) == 1
         normal_colors.sum()
 
-        i = flux2mag(df.BDF_FLUX_DERED_CALIB_I.values)
-        r = flux2mag(df.BDF_FLUX_DERED_CALIB_R.values)
-        z = flux2mag(df.BDF_FLUX_DERED_CALIB_Z.values)
-        k = flux2mag(df.BDF_FLUX_DERED_CALIB_KS.values)
+        i = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_I.values)
+        r = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_R.values)
+        z = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_Z.values)
+        k = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_KS.values)
 
-    return mask & (flux2mag(df.BDF_FLUX_DERED_CALIB_I.values) < 25) & (normal_colors)&((z-k) > 0.5 * (r-z))
+        return mask & (flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_I.values) < 25) & (normal_colors)&((z-k) > 0.5 * (r-z))
 
-    
+    @timeit
     def get_wide_fluxes(self, path):
 
         Mask = self.get_wl_sample_mask(path) & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
@@ -147,7 +160,7 @@ class TrainRunner:
 
         return flux, flux_err, ID, tilename
     
-
+    @timeit
     def get_balrog_contam_mask(self, path):
 
         with h5py.File(path) as f:
@@ -160,7 +173,7 @@ class TrainRunner:
 
         return balrog_cont
 
-
+    @timeit
     def get_wl_sample_mask(self, path, label = 'noshear'):
 
         with h5py.File(path) as f:
@@ -198,7 +211,7 @@ class TrainRunner:
 
         return Mask
     
-
+    @timeit
     def get_foreground_mask(self, path):
 
         with h5py.File(path) as f:
@@ -364,18 +377,24 @@ done
 
 class BinRunner(TrainRunner):    
 
-    def make_bins(self, balrog_classified_df, z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
+    @timeit
+    def make_bins(self, balrog_classified_df,  z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
         
-        Mask = (self.get_wl_sample_mask(self.balrog_catalog_path) & 
-                self.get_foreground_mask(self.balrog_catalog_path) & 
-                self.get_balrog_contam_mask(self.balrog_catalog_path))
+        TMPDIR = os.environ['TMPDIR']
+        
+        if os.path.isfile(TMPDIR + '/make_bins_brog_mask.npy'):
+            Mask = np.load(TMPDIR + '/make_bins_brog_mask.npy')
+        else:
+            Mask = (self.get_wl_sample_mask(self.balrog_catalog_path) & 
+                    self.get_foreground_mask(self.balrog_catalog_path) & 
+                    self.get_balrog_contam_mask(self.balrog_catalog_path))
+            np.save(TMPDIR + '/make_bins_brog_mask.npy', Mask)
 
         with h5py.File(self.balrog_catalog_path, 'r') as f:
             
-#             Mask = Mask & (f['Z'][:] > 0)
             Balrog_df = pd.DataFrame()
             Balrog_df['ID'] = f['ID'][:][Mask]
-            Balrog_df['Z']  = f['Z'][:][Mask].astype('float64')
+#             Balrog_df['Z']  = f['Z'][:][Mask].astype('float64')
             Balrog_df['id'] = f['id'][:][Mask]
             Balrog_df['tilename'] = f['tilename'][:][Mask]
             Balrog_df['true_ra']  = f['true_ra'][:][Mask].astype('float64')
@@ -386,15 +405,14 @@ class BinRunner(TrainRunner):
         '''
         Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
         Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
+        Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
         
         #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
-        Balrog_df = pd.merge(Balrog_df, balrog_classified_df, how = 'left', 
+        Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], how = 'left', 
                              on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], validate = "1:1")
+        
+        print("I DID THE CUTS")
 
-        print(len(Balrog_df))
-        
-#         return Balrog_df
-        
         #For each wide cell, c_hat, find the distribution of deep galaxies in it
         SOMsize   = int(np.ceil(np.sqrt(Balrog_df['cell'].max())))
         Wide_bins = np.zeros(SOMsize * SOMsize, dtype = int).flatten()
@@ -416,9 +434,11 @@ class BinRunner(TrainRunner):
         
         return Wide_bins.reshape(SOMsize, SOMsize)
 
-    
+    @timeit
     def make_nz(self, z_bins, z_grid,
                 balrog_classified_df, deep_classified_df, wide_classified_df):
+        
+        TMPDIR = os.environ['TMPDIR']
 
 
         MY_RESULT = {}
@@ -427,8 +447,6 @@ class BinRunner(TrainRunner):
         deep_was_detected = self.get_deep_mask(self.deep_catalog_path, self.balrog_catalog_path)
         Deep_df = f[deep_was_detected]
         
-        print(np.sum(deep_was_detected))
-
         #Check masking was ok. I'm paranoid about pandas masking sometimes
         assert len(f) == len(deep_was_detected), "Mask is not right size"
         assert len(Deep_df) == np.sum(deep_was_detected), "Masked df doesn't have right size"
@@ -438,10 +456,11 @@ class BinRunner(TrainRunner):
         Deep_df = pd.merge(Deep_df, deep_classified_df[['cell', 'ID']], how = 'right', on = 'ID', suffixes = (None, '_classified'))
 
 
+        print("LOADED DEEP FIELD")
         #-------------------------- READ OUT ALL BALROG QUANTITIES --------------------------
         selection = self.get_wl_sample_mask(self.balrog_catalog_path)
         purity    = self.get_balrog_contam_mask(self.balrog_catalog_path) & self.get_foreground_mask(self.balrog_catalog_path)
-        dgamma = 2*0.01
+        dgamma    = 2*0.01
         with h5py.File(self.balrog_catalog_path, 'r') as f:
 
             Balrog_df = pd.DataFrame()
@@ -450,7 +469,7 @@ class BinRunner(TrainRunner):
             R11       = (f['mcal_g_1p'][:][:, 0] - f['mcal_g_1m'][:][:, 0])/dgamma
             R22       = (f['mcal_g_2p'][:][:, 1] - f['mcal_g_2m'][:][:, 1])/dgamma
             Balrog_df['R']  = np.ones(len(Balrog_df)) #(R11 + R22)/2 #Average the two responses.
-            Balrog_df['Z']  = f['Z'][:]
+#             Balrog_df['Z']  = f['Z'][:]
 
             Balrog_df['id']        = f['id'][:]
             Balrog_df['tilename']  = f['tilename'][:]
@@ -459,14 +478,25 @@ class BinRunner(TrainRunner):
             Balrog_df['true_ra']   = f['true_ra'][:]
             Balrog_df['true_dec']  = f['true_dec'][:]
 
+            Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
             Balrog_df = Balrog_df[Balrog_df['purity'] == True] #This needs to be happen at the very start
+            Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+            Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
+        
             Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], 
                                  how = 'left', on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], suffixes = (None, '_classified'), 
                                  validate = "1:1")
-
+        
+        print("LOADED BROG FIELD")
         
         #-------------------------- READ OUT ALL WIDE QUANTITIES --------------------------
-        Mask = self.get_wl_sample_mask(self.wide_catalog_path) & self.get_foreground_mask(self.wide_catalog_path)
+        
+        if os.path.isfile(TMPDIR + '/wide_mask.npy'):
+            Mask = np.load(TMPDIR + '/wide_mask.npy')
+        else:
+            Mask = self.get_wl_sample_mask(self.wide_catalog_path) & self.get_foreground_mask(self.wide_catalog_path)
+            np.save(TMPDIR + '/wide_mask.npy', Mask)
+            
         dgamma = 2*0.01
         with h5py.File(self.wide_catalog_path, 'r') as f:
 
@@ -481,6 +511,7 @@ class BinRunner(TrainRunner):
             Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']], 
                                how = 'inner', on = 'id', suffixes = (None, '_classified'), validate = "1:1")
             
+        print("LOADED WIDE FIELD")
         
         #-------------------------- MAKE THE BINNING --------------------------
 
@@ -490,21 +521,27 @@ class BinRunner(TrainRunner):
 
         MY_RESULT['Wide_bins'] = Wide_bins
         
+        print("MADE BINS")
+        
         DEEPSOMsize   = int(np.ceil(np.sqrt(np.max(Deep_df['cell'].values))))
         
         print("DEEP SOM SIZE", DEEPSOMsize)
         print("WIDE SOM SIZE", WIDESOMShape)
 
         wide_weight   = Wide_df['w'].values * Wide_df['R'].values
+        
+        print(wide_weight)
 
         print("FRAC OF SAMPLE PER BIN")
-        print(np.round(np.bincount(Wide_bins[Wide_df['cell'].values.astype(int)])/Wide_df['cell'].values.size, 2))
+        print(np.round(np.bincount(Wide_bins[Wide_df['cell'].values.astype(int)])/Wide_df['cell'].values.size, 10))
         
         #COMPUTE THE FIRST TERM: WIDE SOM OCCUPATION
         p_chat_given_shat = np.bincount(Wide_df['cell'].values.astype(int), weights = wide_weight, 
                                         minlength = WIDESOMShape[0]**2)/np.sum(wide_weight)
         
         MY_RESULT['p_chat_given_shat'] = p_chat_given_shat
+        
+        MY_RESULT['p_c_given_shat'] = np.bincount(Deep_df['cell'].values.astype(int), minlength = DEEPSOMsize**2)/len(Deep_df)
         
         #COMPUTE THE SECOND TERM: REDSHIFT DIST. PER DEEP CELL
         Balrog_df_with_deep = pd.merge(Balrog_df, Deep_df[['ID',  'cell']], on = 'ID', suffixes = (None, '_deep'), how = 'left')
@@ -518,13 +555,15 @@ class BinRunner(TrainRunner):
         
         weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
         
+#         return MY_RESULT, Balrog_df, Balrog_df_with_deep, Balrog_df_only_det
+        
         p_z_given_c_bhat_shat  = np.zeros([len(z_bins) - 1, DEEPSOMsize * DEEPSOMsize, z_grid.size - 1])
         for b_i in tqdm(range(len(z_bins) - 1), desc = 'compute p_z_per_cell'):
             for c_i in np.arange(DEEPSOMsize * DEEPSOMsize):
                 bhat_selection = Wide_bins[Balrog_df_only_det['cell'].values.astype(int)] == b_i
                 c_selection    = Balrog_df_only_det['cell_deep'].values == c_i
                 zs_selection   = np.invert(np.isnan(Balrog_df_only_det['Z'].values)) #Only select galaxies with redshifts this time alone
-                selection      = bhat_selection & c_selection & zs_selection             
+                selection      = bhat_selection & c_selection & zs_selection       
 
                 p_z_given_c_bhat_shat[b_i, c_i, :] = np.histogram(Balrog_df_only_det['Z'].values[selection], z_grid, weights = weight[selection])[0]
                 
@@ -541,29 +580,40 @@ class BinRunner(TrainRunner):
         #COMPUTE THE THIRD TERM: TRANSFER MATRIX
         p_chat_c_given_shat = np.zeros([Wide_bins.size, DEEPSOMsize**2])        
         
-        Balrog_df_only_det  = Balrog_df_only_det[(Balrog_df_only_det['cell'] >= 0) & (Balrog_df_only_det['cell_deep'] >= 0)]
+#         Balrog_df_only_det  = Balrog_df_only_det[(Balrog_df_only_det['cell'] >= 0) & (Balrog_df_only_det['cell_deep'] >= 0)]
         weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
+        
+        
+        ####COMPUTE PART 1 OF THIRD TERM
         p_chat_given_shat   = np.bincount(Balrog_df_only_det['cell'].values.astype(int), 
                                           weights = weight, minlength = WIDESOMShape[0]*WIDESOMShape[1])
         
+        p_chat_given_shat /= np.sum(p_chat_given_shat)
         MY_RESULT['p_chat_given_shat'] = p_chat_given_shat
         
+        ####COMPUTE PART 2 OF THIRD TERM
         for chat_i in tqdm(np.arange(Wide_bins.size), desc = 'compute transfer matrix'):
             wide_selection = Balrog_df_only_det['cell'].values.astype(int) == chat_i
             
             p_chat_c_given_shat[chat_i, :] = np.bincount(Balrog_df_only_det['cell_deep'].values[wide_selection].astype(int), 
                                                          weights = weight[wide_selection], minlength = DEEPSOMsize**2)
 
+        p_chat_c_given_shat /= np.sum(p_chat_c_given_shat)
         MY_RESULT['p_chat_c_given_shat'] = p_chat_c_given_shat
         p_c_given_chat_shat = p_chat_c_given_shat/p_chat_given_shat[:, None]
         
         MY_RESULT['p_c_given_chat_shat'] = p_c_given_chat_shat
 
+        
+        #COMPUTE THE CHAT ASSIGNMENT PROBABILITY
+        p_chat_given_bhat = np.array([Wide_bins == i for i in range(len(z_bins) - 1)])
+        MY_RESULT['p_chat_given_bhat'] = p_chat_given_bhat
 
         p_z_given_bhat_shat = np.sum(p_z_given_c_bhat_shat * 
-                                     np.sum(p_c_given_chat_shat * p_chat_given_shat[:, None], axis = 0)[None, :, None], 
+                                     np.sum(p_c_given_chat_shat * 
+                                            (p_chat_given_shat[None, :] * p_chat_given_bhat)[:, :, None], 
+                                             axis = 1)[:, :, None], 
                                      axis = 1)
-        
         
         MY_RESULT['p_z_given_bhat_shat'] = p_z_given_bhat_shat
 
