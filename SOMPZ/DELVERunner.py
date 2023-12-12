@@ -450,6 +450,9 @@ class BinRunner(TrainRunner):
         #Check masking was ok. I'm paranoid about pandas masking sometimes
         assert len(f) == len(deep_was_detected), "Mask is not right size"
         assert len(Deep_df) == np.sum(deep_was_detected), "Masked df doesn't have right size"
+        
+        Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        Deep_df = Deep_df[np.isin(Deep_df['ID'], Cuts['ID'])]
 
         #Now check and merge with classifier
 #         assert len(Deep_df) == len(deep_classified_df), "Balrog dataframes %d != %d" %(len(Deep_df), len(deep_classified_df))
@@ -560,7 +563,7 @@ class BinRunner(TrainRunner):
         p_z_given_c_bhat_shat  = np.zeros([len(z_bins) - 1, DEEPSOMsize * DEEPSOMsize, z_grid.size - 1])
         for b_i in tqdm(range(len(z_bins) - 1), desc = 'compute p_z_per_cell'):
             for c_i in np.arange(DEEPSOMsize * DEEPSOMsize):
-                bhat_selection = Wide_bins[Balrog_df_only_det['cell'].values.astype(int)] == b_i
+                bhat_selection = np.ones_like(Balrog_df_only_det['cell'].values.astype(int)).astype(bool) #Wide_bins[Balrog_df_only_det['cell'].values.astype(int)] == b_i
                 c_selection    = Balrog_df_only_det['cell_deep'].values == c_i
                 zs_selection   = np.invert(np.isnan(Balrog_df_only_det['Z'].values)) #Only select galaxies with redshifts this time alone
                 selection      = bhat_selection & c_selection & zs_selection       
@@ -578,7 +581,7 @@ class BinRunner(TrainRunner):
 #         return Balrog_df_only_det, weight, p_z_given_c_bhat_shat
 
         #COMPUTE THE THIRD TERM: TRANSFER MATRIX
-        p_chat_c_given_shat = np.zeros([Wide_bins.size, DEEPSOMsize**2])        
+        p_chat_c_given_shat = np.zeros([Wide_bins.size, DEEPSOMsize**2])       
         
 #         Balrog_df_only_det  = Balrog_df_only_det[(Balrog_df_only_det['cell'] >= 0) & (Balrog_df_only_det['cell_deep'] >= 0)]
         weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
