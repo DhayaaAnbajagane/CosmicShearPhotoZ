@@ -608,11 +608,13 @@ class BinRunner(TrainRunner):
         MY_RESULT['p_c_given_chat_shat'] = p_c_given_chat_shat
 
         
+        Ratio = MY_RESULT['p_c_given_shat']/np.sum(MY_RESULT['p_c_given_chat_shat'], axis = 0)
+        
         #COMPUTE THE CHAT ASSIGNMENT PROBABILITY
         p_chat_given_bhat = np.array([Wide_bins == i for i in range(len(z_bins) - 1)])
         MY_RESULT['p_chat_given_bhat'] = p_chat_given_bhat
 
-        p_z_given_bhat_shat = np.sum(p_z_given_c_bhat_shat * 
+        p_z_given_bhat_shat = np.sum(p_z_given_c_bhat_shat * #Ratio[None, :, None] *
                                      np.sum(p_c_given_chat_shat * 
                                             (p_chat_given_shat[None, :] * p_chat_given_bhat)[:, :, None], 
                                              axis = 1)[:, :, None], 
