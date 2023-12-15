@@ -439,7 +439,7 @@ class BinRunner(TrainRunner):
                 balrog_classified_df, deep_classified_df, wide_classified_df):
         
         TMPDIR = os.environ['TMPDIR']
-
+        
 
         MY_RESULT = {}
         #-------------------------- READ OUT ALL DEEP QUANTITIES --------------------------
@@ -607,7 +607,6 @@ class BinRunner(TrainRunner):
         
         MY_RESULT['p_c_given_chat_shat'] = p_c_given_chat_shat
 
-        
         Ratio = MY_RESULT['p_c_given_shat']/np.sum(MY_RESULT['p_c_given_chat_shat'], axis = 0)
         
         #COMPUTE THE CHAT ASSIGNMENT PROBABILITY
@@ -622,7 +621,7 @@ class BinRunner(TrainRunner):
         
         MY_RESULT['p_z_given_bhat_shat'] = p_z_given_bhat_shat
 
-        return p_z_given_bhat_shat, MY_RESULT
+        return p_z_given_bhat_shat, MY_RESULT, Balrog_df_only_det
 
     
     def postprocess_nz(self, z, list_of_nz):
