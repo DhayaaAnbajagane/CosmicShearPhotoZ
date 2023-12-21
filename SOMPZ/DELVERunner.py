@@ -101,7 +101,6 @@ class TrainRunner:
         mask &= deep_catalog.FLAGS==0
         mask &= deep_catalog.FLAGSTR=="b'ok'"
         mask &= deep_catalog.FLAGSTR_NIR=="b'ok'"
-        #df = df[mask]
         
         deep_bands_ = ["U","G","R","I","Z","J","H","KS"]
         # remove crazy colors, defined as two 
@@ -131,7 +130,8 @@ class TrainRunner:
         z = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_Z.values)
         k = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_KS.values)
 
-        return mask & (flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_I.values) < 25) & (normal_colors)&((z-k) > 0.5 * (r-z))
+        return mask & normal_colors 
+#         return mask & (flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_I.values) < 25) & (normal_colors)&((z-k) > 0.5 * (r-z))
 
     @timeit
     def get_wide_fluxes(self, path):
@@ -179,7 +179,7 @@ class TrainRunner:
         with h5py.File(path) as f:
             with np.errstate(invalid = 'ignore', divide = 'ignore'):
         
-                flux_r, flux_i, flux_z = f[f'mcal_flux_{label}'][:].T
+                flux_r, flux_i, flux_z = f[f'mcal_flux_{label}_dered_sfd98'][:].T.astype(np.float32)
 
                 mag_r = 30 - 2.5*np.log10(flux_r)
                 mag_i = 30 - 2.5*np.log10(flux_i)
@@ -191,22 +191,26 @@ class TrainRunner:
                                 (mag_r - mag_i < 4)   & (mag_r - mag_i > -1.5) & 
                                 (mag_i - mag_z < 4)   & (mag_i - mag_z > -1.5))
 
-                SNR     = f[f'mcal_s2n_{label}'][:]
-                T_ratio = f[f'mcal_T_ratio_{label}'][:]
-                T       = f[f'mcal_T_{label}'][:]
+                del mag_i, mag_z
+                
+                SNR     = f[f'mcal_s2n_{label}'][:].astype(np.float32)
+                T_ratio = f[f'mcal_T_ratio_{label}'][:].astype(np.float32)
+                T       = f[f'mcal_T_{label}'][:].astype(np.float32)
                 flags   = f['mcal_flags'][:]
                 sg      = f['sg_bdf'][:] if 'sg_bdf' in f.keys() else np.ones_like(SNR)*99 #Need if/else because Balrog doesn't have sg_bdf
                 g1, g2  = f[f'mcal_g_{label}'][:].T
 
                 #Metacal cuts based on DES Y3 ones (from here: https://des.ncsa.illinois.edu/releases/y3a2/Y3key-catalogs)
+                Tratio_Mask= T_ratio > 0.5; del T_ratio
+                Flag_Mask  = flags == 0; del flags
+                SG_Mask = sg >= 4; del sg
                 SNR_Mask   = (SNR > 10) & (SNR < 1000)
-                Tratio_Mask= T_ratio > 0.5
                 T_Mask     = T < 10
-                Flag_Mask  = flags == 0
-                SG_Mask = sg >= 4
-
+                
                 Other_Mask = np.invert((T > 2) & (SNR < 30)) & np.invert((np.log10(T) < (22.25 - mag_r)/3.5) & (g1**2 + g2**2 > 0.8**2))
 
+                del g1, g2, mag_r, T
+                
                 Mask = mcal_pz_mask & SNR_Mask & Tratio_Mask & T_Mask & Flag_Mask & Other_Mask & SG_Mask
 
         return Mask
@@ -217,14 +221,7 @@ class TrainRunner:
         with h5py.File(path) as f:
             FG_Mask = f['FLAGS_FOREGROUND'][:] == 0
             
-            if 'true_ra' in f.keys():
-                DR3_1_1_only = (f['true_ra'][:] < 180) & (f['true_dec'][:] > -25)
-            elif 'ra' in f.keys():
-                DR3_1_1_only = (f['ra'][:] < 180) & (f['dec'][:] > -25)
-            elif 'RA' in f.keys():
-                DR3_1_1_only = (f['RA'][:] < 180) & (f['DEC'][:] > -25)
-
-        return FG_Mask & DR3_1_1_only
+        return FG_Mask
 
 
     def trainSOM(self, flux, flux_err):
@@ -382,13 +379,9 @@ class BinRunner(TrainRunner):
         
         TMPDIR = os.environ['TMPDIR']
         
-        if os.path.isfile(TMPDIR + '/make_bins_brog_mask.npy'):
-            Mask = np.load(TMPDIR + '/make_bins_brog_mask.npy')
-        else:
-            Mask = (self.get_wl_sample_mask(self.balrog_catalog_path) & 
-                    self.get_foreground_mask(self.balrog_catalog_path) & 
-                    self.get_balrog_contam_mask(self.balrog_catalog_path))
-            np.save(TMPDIR + '/make_bins_brog_mask.npy', Mask)
+        Mask = (self.get_wl_sample_mask(self.balrog_catalog_path) & 
+                self.get_foreground_mask(self.balrog_catalog_path) & 
+                self.get_balrog_contam_mask(self.balrog_catalog_path))
 
         with h5py.File(self.balrog_catalog_path, 'r') as f:
             
@@ -403,7 +396,13 @@ class BinRunner(TrainRunner):
         '''
         DEEP CUTS SOMEWHERE ELSE
         '''
-        Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        deep = pd.read_csv(self.deep_catalog_path)
+        Cuts = deep[self.get_deep_sample_cuts(deep)]# = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        
+        print("DEEP", len(deep), "HAS LEN", len(Cuts))
+        
+        Cuts = {'ID' : np.load('/project/chihway/raulteixeira/data/BalrogoftheDECADE_121723_detected_ids.npz')['arr_0']}
+        
         Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
         Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
         
@@ -445,11 +444,12 @@ class BinRunner(TrainRunner):
         #-------------------------- READ OUT ALL DEEP QUANTITIES --------------------------
         f = pd.read_csv(self.deep_catalog_path).reset_index(drop = True)
         deep_was_detected = self.get_deep_mask(self.deep_catalog_path, self.balrog_catalog_path)
-        Deep_df = f[deep_was_detected]
+        deep_sample_cuts  = self.get_deep_sample_cuts(f)
+        Deep_df = f[deep_was_detected & deep_sample_cuts]
         
         #Check masking was ok. I'm paranoid about pandas masking sometimes
-        assert len(f) == len(deep_was_detected), "Mask is not right size"
-        assert len(Deep_df) == np.sum(deep_was_detected), "Masked df doesn't have right size"
+        assert len(f) == len(deep_was_detected & deep_sample_cuts), "Mask is not right size"
+        assert len(Deep_df) == np.sum(deep_was_detected & deep_sample_cuts), "Masked df doesn't have right size"
         
         Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
         Deep_df = Deep_df[np.isin(Deep_df['ID'], Cuts['ID'])]
@@ -483,7 +483,7 @@ class BinRunner(TrainRunner):
 
             Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
             Balrog_df = Balrog_df[Balrog_df['purity'] == True] #This needs to be happen at the very start
-            Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+            Cuts = Cuts = {'ID' : np.load('/project/chihway/raulteixeira/data/BalrogoftheDECADE_121723_detected_ids.npz')['arr_0']}
             Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
         
             Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], 
@@ -558,11 +558,12 @@ class BinRunner(TrainRunner):
         
         weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
         
-#         return MY_RESULT, Balrog_df, Balrog_df_with_deep, Balrog_df_only_det
-        
         p_z_given_c_bhat_shat  = np.zeros([len(z_bins) - 1, DEEPSOMsize * DEEPSOMsize, z_grid.size - 1])
         for b_i in tqdm(range(len(z_bins) - 1), desc = 'compute p_z_per_cell'):
             for c_i in np.arange(DEEPSOMsize * DEEPSOMsize):
+                '''
+                DHAYAA: YOU NEED TO PUT BHAT SELECTION BACK IN HERE!!!!
+                '''
                 bhat_selection = np.ones_like(Balrog_df_only_det['cell'].values.astype(int)).astype(bool) #Wide_bins[Balrog_df_only_det['cell'].values.astype(int)] == b_i
                 c_selection    = Balrog_df_only_det['cell_deep'].values == c_i
                 zs_selection   = np.invert(np.isnan(Balrog_df_only_det['Z'].values)) #Only select galaxies with redshifts this time alone
