@@ -9,6 +9,7 @@ import healpy as hp
 import h5py
 import fitsio
 from astropy.cosmology import FlatwCDM
+from tqdm import tqdm
 
 
 class WZRunner:
@@ -35,21 +36,39 @@ class WZRunner:
 
         assert len(corr) == 2, "Correlator must be [DD, DR]"
 
-        xi  = corr[0].xi/corr[1] - 1
+        DD  = corr[0].weight
+        DR  = corr[1].weight * corr[0].tot/corr[1].tot
+        xi  = DD/DR - 1
         ang = corr[0].meanr
         w_ur = np.trapz(ang**-1 * xi, x = ang)
 
-        return w_ur
+        return np.array([w_ur])
     
 
-    def _get_unknown_cat(self, bin):
+    def _define_patches(self):
+        
+        ra  = self.unknown_cat['ra']
+        dec = self.unknown_cat['dec']
+        m   = self.Mask[hp.ang2pix(self.NSIDE, ra, dec, lonlat  = True)]
+        ra  = ra[m]
+        dec = dec[m]
+        
+        center_path = os.environ['TMPDIR'] + '/Patch_centers_TreeCorr_tmp'
+        os.system('rm %s' %  center_path)
+        Nth    = int(len(ra)/30_000_000) #Select every Nth object such that we end up using 10 million to define patches
+        if Nth < 1: Nth = 1
+        small_cat = treecorr.Catalog(ra = ra[::Nth], dec = dec[::Nth], ra_units='deg',dec_units='deg', npatch = 100)
+        small_cat.write_patch_centers(center_path)
+
+    def _get_unknown_cat(self, b):
 
         ra  = self.unknown_cat['ra']
         dec = self.unknown_cat['dec']
         w   = self.unknown_cat['w']
 
-        m_u   = (self.unknown_cat['bin'] == bin) & self.Mask[hp.ang2pix(self.NSIDE, ra, dec, lonlat  = True)]
-        cat_u = treecorr.Catalog(ra = ra[m_u], dec = dec[m_u], w  = w[m_u], ra_units = 'deg', dec_units = 'deg')
+        center_path = os.environ['TMPDIR'] + '/Patch_centers_TreeCorr_tmp'
+        m_u   = (self.unknown_cat['bin'] == (b + 1)) & self.Mask[hp.ang2pix(self.NSIDE, ra, dec, lonlat  = True)]
+        cat_u = treecorr.Catalog(ra = ra[m_u], dec = dec[m_u], w  = w[m_u], ra_units = 'deg', dec_units = 'deg', patch_centers=center_path)
         
         return cat_u
     
@@ -61,8 +80,9 @@ class WZRunner:
         dec = self.ref_cat['dec']
         w   = self.ref_cat['w']
 
+        center_path = os.environ['TMPDIR'] + '/Patch_centers_TreeCorr_tmp'
         m_r   = (self.ref_cat['z'] > z_min) & (self.ref_cat['z'] < z_max) & (self.Mask[hp.ang2pix(self.NSIDE, ra, dec, lonlat  = True)])
-        cat_r = treecorr.Catalog(ra = ra[m_r], dec = dec[m_r], w  = w[m_r], ra_units = 'deg', dec_units = 'deg')
+        cat_r = treecorr.Catalog(ra = ra[m_r], dec = dec[m_r], w  = w[m_r], ra_units = 'deg', dec_units = 'deg', patch_centers=center_path)
         
         return cat_r
     
@@ -74,8 +94,9 @@ class WZRunner:
         dec = self.rand_cat['dec']
         w   = self.rand_cat['w']
 
+        center_path = os.environ['TMPDIR'] + '/Patch_centers_TreeCorr_tmp'
         m_r   = (self.rand_cat['z'] > z_min) & (self.rand_cat['z'] < z_max) & (self.Mask[hp.ang2pix(self.NSIDE, ra, dec, lonlat  = True)])
-        cat_r = treecorr.Catalog(ra = ra[m_r], dec = dec[m_r], w  = w[m_r], ra_units = 'deg', dec_units = 'deg')
+        cat_r = treecorr.Catalog(ra = ra[m_r], dec = dec[m_r], w  = w[m_r], ra_units = 'deg', dec_units = 'deg', patch_centers=center_path)
         
         return cat_r
 
@@ -90,36 +111,42 @@ class WZRunner:
         N_z  = np.ones([4, self.z_bins])
         dN_z = np.ones([4, self.z_bins])
 
-        for b_i in range(4):
+        #Setup patches first for jackknifing
+        self._define_patches()
+        
+        with tqdm(total = (z.size - 1) * 4, desc = 'Building Wz') as pbar:
+            for b_i in range(4):
 
-            cat_u = self._get_unknown_cat(b_i)
-            
-            for z_i in range(z.size -1):
+                cat_u = self._get_unknown_cat(b_i)
 
-                cat_r = self._get_ref_cat(z[z_i], z[z_i + 1])
-                cat_n = self._get_rand_cat(z[z_i], z[z_i + 1])
+                for z_i in range(z.size -1):
 
-                z_mid = (z[z_i] + z[z_i + 1])/2
-                physical_min, physical_max = 1.5, 5.0 #in Mpc
-                physical_min = 0.9*physical_min #simply enlarging the bottom and top bins a bit
-                physical_max = 1.1*physical_max 
+                    cat_r = self._get_ref_cat(z[z_i], z[z_i + 1])
+                    cat_n = self._get_rand_cat(z[z_i], z[z_i + 1])
 
-                theta_min = physical_min/cosmo.angular_diameter_distance(z_mid) * 180/np.pi #in degrees
-                theta_max = physical_max/cosmo.angular_diameter_distance(z_mid) * 180/np.pi #in degrees
+                    z_mid = (z[z_i] + z[z_i + 1])/2
+                    physical_min, physical_max = 1.5, 5.0 #in Mpc
+                    physical_min = 0.9*physical_min #simply enlarging the bottom and top bins a bit
+                    physical_max = 1.1*physical_max 
 
-                DD = treecorr.NNCorrelation(min_sep =  theta_min, max_sep = theta_max, sep_units = 'deg', bins = self.R_bins, bin_slop = 0.01)
-                DR = treecorr.NNCorrelation(min_sep =  theta_min, max_sep = theta_max, sep_units = 'deg', bins = self.R_bins, bin_slop = 0.01)
-                
-                DD.process(cat_u, cat_r)
-                DR.process(cat_u, cat_n)
+                    theta_min = physical_min/cosmo.angular_diameter_distance(z_mid).value * 180/np.pi #in degrees
+                    theta_max = physical_max/cosmo.angular_diameter_distance(z_mid).value * 180/np.pi #in degrees
 
-                correlators = [DD, DR]
-                w_ur        = self.Wz(correlators)
-                w_ur_cov    = treecorr.estimate_multi_cov(correlators, 'jackknife', func = self.Wz)
+                    DD = treecorr.NNCorrelation(min_sep =  theta_min, max_sep = theta_max, sep_units = 'deg', nbins = self.R_bins, bin_slop = 0.01)
+                    DR = treecorr.NNCorrelation(min_sep =  theta_min, max_sep = theta_max, sep_units = 'deg', nbins = self.R_bins, bin_slop = 0.01)
+
+                    DD.process(cat_u, cat_r)
+                    DR.process(cat_u, cat_n)
+
+                    correlators = [DD, DR]
+                    w_ur        = self.Wz(correlators)[0]
+                    w_ur_cov    = treecorr.estimate_multi_cov(correlators, 'jackknife', func = self.Wz)[0, 0]
+
+
+                    N_z[b_i, z_i]  = w_ur
+                    dN_z[b_i, z_i] = np.sqrt(w_ur_cov)
                     
-
-                N_z[b_i, z_i]  = w_ur
-                dN_z[b_i, z_i] = np.sqrt(w_ur_cov)
+                    pbar.update(1)
 
         return N_z, dN_z
     
@@ -196,14 +223,16 @@ if __name__ == '__main__':
 
     #Make a joint mask such that the catalogs overlap
     NSIDE = args['NSIDE']
-    B_pix = hp.pix2ang(NSIDE, Br_cat['ra'], Br_cat['dec'], lonlat = True)
-    C_pix = hp.pix2ang(NSIDE, Cat['ra'],    Cat['dec'],    lonlat = True)
+    B_pix = hp.ang2pix(NSIDE, Br_cat['ra'], Br_cat['dec'], lonlat = True)
+    C_pix = hp.ang2pix(NSIDE, Cat['ra'],    Cat['dec'],    lonlat = True)
 
     joint = np.intersect1d(B_pix, C_pix) #Only select pixels that have galaxies in both catalogs
     Mask  = np.zeros(hp.nside2npix(NSIDE), dtype = bool)
     Mask[joint] = True
-
-    Runner = WZRunner(Cat, Br_cat, Bn_cat, Mask, R_min = 1.5, R_max = 5, R_bins = 20, z_min = 0.1, z_max = 1.1, z_bins = 40)
+    
+    np.save('/project/chihway/dhayaa/DECADE/Wz/Joint_Mask_NSIDE%d.npy' % NSIDE, Mask)
+    
+    Runner = WZRunner(Cat, Br_cat, Bn_cat, Mask, R_min = 1.5, R_max = 5, R_bins = 20, z_min = 0.1, z_max = 1.1, z_bins = 20)
     result = Runner.process()
 
     np.save('/project/chihway/dhayaa/DECADE/Wz/Nz.npy',  result[0])
