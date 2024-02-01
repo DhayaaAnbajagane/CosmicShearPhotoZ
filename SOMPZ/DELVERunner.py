@@ -451,7 +451,7 @@ class BinRunner(TrainRunner):
         assert len(f) == len(deep_was_detected & deep_sample_cuts), "Mask is not right size"
         assert len(Deep_df) == np.sum(deep_was_detected & deep_sample_cuts), "Masked df doesn't have right size"
         
-        Cuts = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        Cuts = pd.read_csv('/project/chihway/raulteixeira/data/deepfields_clean.csv.gz')
         Deep_df = Deep_df[np.isin(Deep_df['ID'], Cuts['ID'])]
 
         #Now check and merge with classifier
