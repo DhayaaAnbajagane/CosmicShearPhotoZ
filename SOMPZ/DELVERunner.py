@@ -1,5 +1,6 @@
 import numpy as np, pandas as pd, h5py
 from . import SOM
+from scipy import interpolate
 import argparse
 import fitsio
 import os
@@ -375,6 +376,23 @@ done
 class BinRunner(TrainRunner):    
 
     @timeit
+    def get_shear_weights(self, S2N, T_over_Tpsf):
+        
+        X = np.load('/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/weights_20231212.npy', allow_pickle = True)[()]
+        
+        S = X['s2n'].flatten()
+        T = X['T_over_Tpsf'].flatten()
+        R = X['R'].flatten()
+        w = X['w'].flatten()
+        
+        #Have checked that this what DESY3 uses.
+        interp        = interpolate.NearestNDInterpolator((S, T), R * w,)
+        shear_weights = interp( (S2N, T_over_Tpsf) )
+        
+        return shear_weights
+        
+        
+    @timeit
     def make_bins(self, balrog_classified_df,  z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
         
         TMPDIR = os.environ['TMPDIR']
@@ -463,16 +481,13 @@ class BinRunner(TrainRunner):
         #-------------------------- READ OUT ALL BALROG QUANTITIES --------------------------
         selection = self.get_wl_sample_mask(self.balrog_catalog_path)
         purity    = self.get_balrog_contam_mask(self.balrog_catalog_path) & self.get_foreground_mask(self.balrog_catalog_path)
-        dgamma    = 2*0.01
+        
         with h5py.File(self.balrog_catalog_path, 'r') as f:
 
             Balrog_df = pd.DataFrame()
             Balrog_df['ID'] = f['ID'][:]
-            Balrog_df['w']  = np.ones(len(Balrog_df)) #f['mcal_g_w'][:][Mask]
-            R11       = (f['mcal_g_1p'][:][:, 0] - f['mcal_g_1m'][:][:, 0])/dgamma
-            R22       = (f['mcal_g_2p'][:][:, 1] - f['mcal_g_2m'][:][:, 1])/dgamma
-            Balrog_df['R']  = np.ones(len(Balrog_df)) #(R11 + R22)/2 #Average the two responses.
-#             Balrog_df['Z']  = f['Z'][:]
+            Balrog_df['w']  = np.ones(len(Balrog_df))
+            Balrog_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:], f['mcal_T_ratio_noshear'][:])
 
             Balrog_df['id']        = f['id'][:]
             Balrog_df['tilename']  = f['tilename'][:]
@@ -500,15 +515,12 @@ class BinRunner(TrainRunner):
             Mask = self.get_wl_sample_mask(self.wide_catalog_path) & self.get_foreground_mask(self.wide_catalog_path)
             np.save(TMPDIR + '/wide_mask.npy', Mask)
             
-        dgamma = 2*0.01
         with h5py.File(self.wide_catalog_path, 'r') as f:
 
             Wide_df = pd.DataFrame()
             Wide_df['id'] = f['id'][:][Mask]
-            Wide_df['w']  = np.ones(len(Wide_df)) #f['mcal_g_w'][:][Mask]
-            R11 = (f['mcal_g_1p'][:][Mask, 0] - f['mcal_g_1m'][:][Mask, 0])/dgamma
-            R22 = (f['mcal_g_2p'][:][Mask, 1] - f['mcal_g_2m'][:][Mask, 1])/dgamma
-            Wide_df['R']  = np.ones(len(Wide_df)) #(R11 + R22)/2 #Average the two responses.
+            Wide_df['w']  = np.ones(len(Wide_df))
+            Wide_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:], f['mcal_T_ratio_noshear'][:])
 
 #             assert len(Wide_df) == len(wide_classified_df), "Wide dataframes %d != %d" %(len(Wide_df), len(wide_classified_df))
             Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']], 
