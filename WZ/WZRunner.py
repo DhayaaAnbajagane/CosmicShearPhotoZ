@@ -170,7 +170,7 @@ class WZRunner:
         u_pix = np.bincount(u_pix, minlength = hp.nside2npix(NSIDE))
         r_pix = np.bincount(r_pix, minlength = hp.nside2npix(NSIDE))
 
-        Mask  = (u_pix > 1) & (r_pix > 1); del u_pix, r_pix
+        Mask  = (u_pix > args['Count_threshold']) & (r_pix > args['Count_threshold']); del u_pix, r_pix
         
         
         self.Mask = Mask
@@ -279,7 +279,7 @@ class WZRunner:
                         cat_n = self._get_rand_cat(z[z_i], z[z_i + 1])
                     
                     else:
-                        cat_u, cat_r, cat_n = self._get_all_cats(b_i, z[z_i], z[z_i + 1], delta_z = 0.1)
+                        cat_u, cat_r, cat_n = self._get_all_cats(b_i, z[z_i], z[z_i + 1], delta_z = 0.05)
                     
                     
                     if len(cat_r.ra) < 10: 
@@ -295,8 +295,6 @@ class WZRunner:
                     theta_min = physical_min/cosmo.angular_diameter_distance(z_mid).value * 180/np.pi #in degrees
                     theta_max = physical_max/cosmo.angular_diameter_distance(z_mid).value * 180/np.pi #in degrees
                     
-                    print(z_mid, theta_min* 60, theta_max * 60)
-
                     DD = treecorr.NNCorrelation(min_sep =  theta_min, max_sep = theta_max, sep_units = 'deg', nbins = self.R_bins, bin_slop = 0.01)
                     DR = treecorr.NNCorrelation(min_sep =  theta_min, max_sep = theta_max, sep_units = 'deg', nbins = self.R_bins, bin_slop = 0.01)
                     
@@ -326,9 +324,6 @@ class WZRunner:
                     db_z[b_i, z_i]  = np.sqrt(Cov_i[2, 2])
                     
                     w_dm[b_i, z_i]  = w_dm_i
-                    
-                    print(z_i, b_z_i, w_dm_i, b_z_i**2 * w_dm_i)
-                        
                     
                     
                     del cat_r, cat_n
@@ -363,10 +358,18 @@ if __name__ == '__main__':
     my_parser.add_argument('--DECADE',    action='store_true', dest = 'DECADE')
     my_parser.add_argument('--DES',       action='store_true', dest = 'DES')
     my_parser.add_argument('--NSIDE',     action='store', type = int, default = 256)
-    my_parser.add_argument('--redshift_mask',  action='store_true', default = False)
+    my_parser.add_argument('--redshift_mask',   action='store_true', default = False)
+    my_parser.add_argument('--OnlyUnknownMask', action='store_true', default = False)
+    my_parser.add_argument('--Count_threshold', action='store', type = int, default = 0)
+    my_parser.add_argument('--OutPath', action='store', type = str, required = True)
+    
     
     args  = vars(my_parser.parse_args())
 
+    
+    assert (args['OnlyUnknownMask'] + args['redshift_mask']) <= 1, f"You have set multiple mask flags. Please set only one: {args}"
+    
+    
     
     if args['DECADE']:
 
@@ -427,7 +430,27 @@ if __name__ == '__main__':
     Bn_cat = {'ra' : boss_ran['RA'], 'dec' : boss_ran['DEC'], 'z' : boss_ran['Z'], 'w' : np.ones_like(boss_ran['WEIGHT_FKP'])}
     
     
-    if not args['redshift_mask']:
+    if args['redshift_mask']:
+        
+        
+        print("USING REDSHIFT MASK")
+        
+        Mask = np.ones(hp.nside2npix(args['NSIDE']), dtype = int)
+        
+    elif args['OnlyUnknownMask']:
+        
+        
+        print("USING ONLY UNKNOWN SAMPLE MASK")
+        
+        #Make a joint mask such that the catalogs overlap
+        NSIDE = args['NSIDE']
+
+        u_pix = hp.ang2pix(NSIDE, Cat['ra'],    Cat['dec'],    lonlat = True)
+        u_pix = np.bincount(u_pix, minlength = hp.nside2npix(NSIDE))
+        
+        Mask  = (u_pix > args['Count_threshold']); del u_pix
+        
+    else:
         
         #Make a joint mask such that the catalogs overlap
         NSIDE = args['NSIDE']
@@ -438,12 +461,7 @@ if __name__ == '__main__':
         u_pix = np.bincount(u_pix, minlength = hp.nside2npix(NSIDE))
         r_pix = np.bincount(r_pix, minlength = hp.nside2npix(NSIDE))
 
-        Mask  = (u_pix > 0) & (r_pix > 0); del u_pix, r_pix
-        
-        
-    else:
-        
-        Mask = np.ones(hp.nside2npix(args['NSIDE']), dtype = int)
+        Mask  = (u_pix > args['Count_threshold']) & (r_pix > args['Count_threshold']); del u_pix, r_pix
 
     
     
@@ -454,4 +472,4 @@ if __name__ == '__main__':
     result = Runner.process()
     
     
-    np.save('/project/chihway/dhayaa/DECADE/Wz/20240213_Nz.npy', result)
+    np.save(args['OutPath'], result)
