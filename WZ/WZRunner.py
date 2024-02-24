@@ -15,7 +15,7 @@ import pyccl as ccl
 
 class WZRunner:
 
-    def __init__(self, unknown_cat, ref_cat, rand_cat, Mask, R_min, R_max, R_bins, z_min, z_max, z_bins, redshift_mask = False):
+    def __init__(self, unknown_cat, ref_cat, rand_cat, Mask, R_min, R_max, R_bins, z_min, z_max, z_bins, redshift_mask = False, delta_z = 0.1):
 
         self.unknown_cat = unknown_cat
         self.ref_cat     = ref_cat
@@ -31,7 +31,9 @@ class WZRunner:
         self.z_min  = z_min
         self.z_max  = z_max
         self.z_bins = z_bins
+        
         self.redshift_mask = redshift_mask
+        self.delta_z       = delta_z
 
 
     def Wz(self, corr):
@@ -270,7 +272,8 @@ class WZRunner:
         with tqdm(total = (z.size - 1) * 4, desc = 'Building Wz') as pbar:
             for b_i in range(4):
 
-                cat_u = self._get_unknown_cat(b_i)
+                if not self.redshift_mask:
+                    cat_u = self._get_unknown_cat(b_i)
 
                 for z_i in range(z.size -1):
                     
@@ -279,7 +282,7 @@ class WZRunner:
                         cat_n = self._get_rand_cat(z[z_i], z[z_i + 1])
                     
                     else:
-                        cat_u, cat_r, cat_n = self._get_all_cats(b_i, z[z_i], z[z_i + 1], delta_z = 0.05)
+                        cat_u, cat_r, cat_n = self._get_all_cats(b_i, z[z_i], z[z_i + 1], delta_z = self.delta_z)
                     
                     
                     if len(cat_r.ra) < 10: 
@@ -360,14 +363,17 @@ if __name__ == '__main__':
     my_parser.add_argument('--NSIDE',     action='store', type = int, default = 256)
     my_parser.add_argument('--redshift_mask',   action='store_true', default = False)
     my_parser.add_argument('--OnlyUnknownMask', action='store_true', default = False)
+    my_parser.add_argument('--OnlyRefMask',     action='store_true', default = False)
+    my_parser.add_argument('--NoMask',          action='store_true', default = False)
     my_parser.add_argument('--Count_threshold', action='store', type = int, default = 0)
     my_parser.add_argument('--OutPath', action='store', type = str, required = True)
+    my_parser.add_argument('--redshift_mask_deltaz', action='store', type = float, default = 0.1)
     
     
     args  = vars(my_parser.parse_args())
 
     
-    assert (args['OnlyUnknownMask'] + args['redshift_mask']) <= 1, f"You have set multiple mask flags. Please set only one: {args}"
+    assert (args['OnlyUnknownMask'] + args['redshift_mask'] + args['NoMask'] + args['OnlyRefMask']) <= 1, f"You have set multiple mask flags. Please set only one: {args}"
     
     
     
@@ -450,6 +456,30 @@ if __name__ == '__main__':
         
         Mask  = (u_pix > args['Count_threshold']); del u_pix
         
+        
+        
+    elif args['OnlyRefMask']:
+        
+        
+        print("USING ONLY REFERENCE SAMPLE MASK")
+        
+        #Make a joint mask such that the catalogs overlap
+        NSIDE = args['NSIDE']
+
+        r_pix = hp.ang2pix(NSIDE, Br_cat['ra'], Br_cat['dec'], lonlat = True)
+        r_pix = np.bincount(r_pix, minlength = hp.nside2npix(NSIDE))
+
+        Mask  = (r_pix > args['Count_threshold']); del r_pix
+        
+        
+        
+    elif args['NoMask']:
+        
+        print("USING NO MASK")        
+        Mask = np.ones(hp.nside2npix(args['NSIDE']), dtype = int)
+        
+        
+        
     else:
         
         #Make a joint mask such that the catalogs overlap
@@ -468,7 +498,7 @@ if __name__ == '__main__':
     print("MADE BOSS CATALOG")
     
     Runner = WZRunner(Cat, Br_cat, Bn_cat, Mask = Mask, redshift_mask = args['redshift_mask'],
-                      R_min = 1.5, R_max = 5, R_bins = 20, z_min = 0.1, z_max = 1.1, z_bins = 40)
+                      R_min = 1.5, R_max = 5, R_bins = 20, z_min = 0.1, z_max = 1.1, z_bins = 40, delta_z = args['redshift_mask_deltaz'])
     result = Runner.process()
     
     
