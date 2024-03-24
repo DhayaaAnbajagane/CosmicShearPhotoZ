@@ -1,8 +1,7 @@
+import SOM
 import numpy as np, pandas as pd, h5py
-from . import SOM
 from scipy import interpolate
 import argparse
-import fitsio
 import os
 import joblib
 import glob
@@ -21,11 +20,22 @@ def timeit(func):
         return result
     return wrapper
 
+
+
+import tracemalloc
+
+tracemalloc.start()
+current, peak = tracemalloc.get_traced_memory()
+def get_mem():
+    current, peak = tracemalloc.get_traced_memory()
+    print(f"Current memory usage is {current / 10**6} MB; Peak was {peak / 10**6} MB")
+
+    
 class TrainRunner:
 
-    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path = None, Nth = 1):
+    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path = None):
 
-        self.rng = np.random.default_rng(seed = seed)
+        self.seed = seed
         self.output_dir          = output_dir
         self.deep_catalog_path   = deep_catalog_path
         self.wide_catalog_path   = wide_catalog_path
@@ -33,26 +43,43 @@ class TrainRunner:
         
         if not os.path.isdir(output_dir):
             os.makedirs(output_dir)
-
-        self.Nth = Nth
         
+    @timeit
     def go(self):
 
-        DEEP     = self.get_deep_fluxes(self.deep_catalog_path)
-        DEEP_SOM = self.train(flux = DEEP[0][::self.Nth], flux_err = DEEP[1][::self.Nth])
+        self.train_deep()
+        self.train_wide()
+    
+    
+    @timeit
+    def train_deep(self):
+        
+        rng      = np.random.default_rng(self.seed)
+        DEEP     = self.get_deep_fluxes(self.deep_catalog_path, self.balrog_catalog_path)
+        INDS     = rng.choice(len(DEEP[0]), size = len(DEEP[0]), replace = False) #Scramble during training
+        DEEP_SOM = self.trainSOM(flux = DEEP[0][INDS], flux_err = DEEP[1][INDS], Ncells = 48)
+        print("FINISHED TRAINING DEEP SOM")
 
+        np.save(self.output_dir + '/DEEP_SOM_weights.npy', DEEP_SOM)
+        
+        
+    @timeit
+    def train_wide(self):
+        
+        rng      = np.random.default_rng(self.seed)
         WIDE     = self.get_wide_fluxes(self.wide_catalog_path)
-        inds     = self.rng.choice(len(WIDE[0]), np.min([len(WIDE[0]), 10_000_000]))
-        WIDE_SOM = self.train(flux = WIDE[0][inds][::self.Nth], flux_err = WIDE[1][inds][::self.Nth])
+        inds     = rng.choice(len(WIDE[0]), np.min([len(WIDE[0]), 2_000_000]))
+        WIDE_SOM = self.trainSOM(flux = WIDE[0][inds], flux_err = WIDE[1][inds], Ncells = 32)
+        print("FINISHED TRAINING WIDE SOM")
 
-        np.save(self.output_dir + '/DEEP_SOM.npy', DEEP_SOM)
-        np.save(self.output_dir + '/WIDE_SOM.npy', WIDE_SOM)
+        np.save(self.output_dir + '/WIDE_SOM_weights.npy', WIDE_SOM)
 
 
+    @timeit
     def get_deep_fluxes(self, path, balrog_path):
 
         #Deep field bands
-        bands = 'ugrizJHKS'.upper()
+        bands = [B.upper() for B in ['u', 'g', 'r', 'i', 'z', 'J', 'H', 'KS']]
 
         f = pd.read_csv(path)
 
@@ -61,12 +88,24 @@ class TrainRunner:
         ID       = f['ID'].values
 
         deep_was_detected = self.get_deep_mask(path, balrog_path)
+        deep_is_pure      = self.get_deep_sample_cuts(f)
 
-        flux     = flux[deep_was_detected]
-        flux_err = flux_err[deep_was_detected]
-        ID       = ID[deep_was_detected]
+        print("-----------------------")
+        print("DEEP FIELD STATS")
+        print("-----------------------")
+        print("ORIGINAL: %d GALAXIES" % deep_was_detected.size)
+        print("DETECTED: %d GALAXIES" % np.sum(deep_was_detected))
+        print("PURE: %d GALAXIES" % np.sum(deep_is_pure))
+        print("FINAL: %d GALAXIES" % np.sum(deep_was_detected & deep_is_pure))
+        print("-----------------------\n\n")
+        
+        mask     = deep_was_detected & deep_is_pure
+        flux     = flux[mask]
+        flux_err = flux_err[mask]
+        ID       = ID[mask]
 
         return flux, flux_err, ID
+    
     
     @timeit
     def get_deep_mask(self, path, balrog_path):
@@ -74,8 +113,11 @@ class TrainRunner:
         f  = pd.read_csv(path)
         ID = f['ID'].values
 
-        balrog_gold = self.get_wl_sample_mask(balrog_path) & self.get_foreground_mask(balrog_path) & self.get_balrog_contam_mask(balrog_path)
-        with h5py.File(balrog_path) as f:
+        balrog_gold = (self.get_wl_sample_mask(balrog_path) & 
+                       self.get_foreground_mask(balrog_path) & 
+                       self.get_balrog_contam_mask(balrog_path))
+        
+        with h5py.File(balrog_path, 'r') as f:
 
             balrog_ID   = f['ID'][:]
             balrog_det  = f['detected'][:] == 1
@@ -87,6 +129,7 @@ class TrainRunner:
         deep_was_detected = np.isin(ID, balrog_ID)
 
         return deep_was_detected
+    
     
     @timeit
     def get_deep_sample_cuts(self, deep_catalog):
@@ -110,8 +153,7 @@ class TrainRunner:
         mags_d = np.zeros((len(deep_catalog),len(deep_bands_)))
         magerrs_d = np.zeros((len(deep_catalog),len(deep_bands_)))
 
-        def flux2mag(flux):
-            
+        def flux2mag(flux):    
             with np.errstate(divide = 'ignore', invalid = 'ignore'):
                 return 30 - 2.5*np.log10(flux)
         
@@ -123,65 +165,57 @@ class TrainRunner:
         for i in range(len(deep_bands_)-1):
             colors[:,i] = mags_d[:,i] - mags_d[:,i+1]
 
-        normal_colors = np.mean(colors > -1, axis=1) == 1
-        normal_colors.sum()
+        normal_colors = np.all(colors > -1, axis=1)
+        
+        return mask & normal_colors
 
-        i = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_I.values)
-        r = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_R.values)
-        z = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_Z.values)
-        k = flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_KS.values)
-
-        return mask & normal_colors 
-#         return mask & (flux2mag(deep_catalog.BDF_FLUX_DERED_CALIB_I.values) < 25) & (normal_colors)&((z-k) > 0.5 * (r-z))
-
+    
     @timeit
     def get_wide_fluxes(self, path):
 
+        #We check balrog_contam even in data, but the result is always TRUE if its data
         Mask = self.get_wl_sample_mask(path) & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
-        with h5py.File(path) as f:
+        with h5py.File(path, 'r') as f:
 
             #For Balrog, need both ID and tilename to get unique match
             ID = f['id'][:]
-            tilename = f['tilename'][:]
-
-            flux_r, flux_i, flux_z = f['mcal_flux_noshear'][:].T
-            flux_err_r, flux_err_i, flux_err_z = f['mcal_flux_err_noshear'][:].T
             
+            if 'tilename' in f.keys():
+                tilename = f['tilename'][:]
+            else:
+                tilename = None
+
             #These are the fluxes with all metacal cuts applied
             ID     = ID[Mask]
-            flux_r = flux_r[Mask]
-            flux_i = flux_i[Mask]
-            flux_z = flux_z[Mask]
-            flux_err_r = flux_err_r[Mask]
-            flux_err_i = flux_err_i[Mask]
-            flux_err_z = flux_err_z[Mask]
-
-            flux     = np.hstack([flux_r, flux_i, flux_z]).T
-            flux_err = np.hstack([flux_err_r, flux_err_i, flux_err_z]).T
+            
+            flux     = f['mcal_flux_noshear'][:][Mask]
+            flux_err = f['mcal_flux_err_noshear'][:][Mask]
 
         return flux, flux_err, ID, tilename
+    
     
     @timeit
     def get_balrog_contam_mask(self, path):
 
-        with h5py.File(path) as f:
+        with h5py.File(path, 'r') as f:
             
             #Only select objects with no GOLD object within 1.5 arcsec
             if 'd_contam_arcsec' in f.keys():
                 balrog_cont = f['d_contam_arcsec'][:] > 1.5 
             else:
-                balrog_cont = np.ones_like(f['d_contam_arcsec'][:])
-
+                balrog_cont = True
+            
         return balrog_cont
 
+    
     @timeit
     def get_wl_sample_mask(self, path, label = 'noshear'):
 
-        with h5py.File(path) as f:
+        with h5py.File(path, 'r') as f:
             with np.errstate(invalid = 'ignore', divide = 'ignore'):
         
                 flux_r, flux_i, flux_z = f[f'mcal_flux_{label}_dered_sfd98'][:].T.astype(np.float32)
-
+                
                 mag_r = 30 - 2.5*np.log10(flux_r)
                 mag_i = 30 - 2.5*np.log10(flux_i)
                 mag_z = 30 - 2.5*np.log10(flux_z)
@@ -198,7 +232,7 @@ class TrainRunner:
                 T_ratio = f[f'mcal_T_ratio_{label}'][:].astype(np.float32)
                 T       = f[f'mcal_T_{label}'][:].astype(np.float32)
                 flags   = f['mcal_flags'][:]
-                sg      = f['sg_bdf'][:] if 'sg_bdf' in f.keys() else np.ones_like(SNR)*99 #Need if/else because Balrog doesn't have sg_bdf
+                sg      = f['FLAGS_SG_BDF'][:] if 'FLAGS_SG_BDF' in f.keys() else np.ones_like(SNR)*99 #Need if/else because Balrog doesn't have sg_bdf
                 g1, g2  = f[f'mcal_g_{label}'][:].T
 
                 #Metacal cuts based on DES Y3 ones (from here: https://des.ncsa.illinois.edu/releases/y3a2/Y3key-catalogs)
@@ -219,20 +253,21 @@ class TrainRunner:
     @timeit
     def get_foreground_mask(self, path):
 
-        with h5py.File(path) as f:
+        with h5py.File(path, 'r') as f:
             FG_Mask = f['FLAGS_FOREGROUND'][:] == 0
             
         return FG_Mask
 
 
-    def trainSOM(self, flux, flux_err):
+    def trainSOM(self, flux, flux_err, Ncells):
 
-        return SOM.TrainSOM(flux, flux_err)
+        return SOM.TrainSOM(flux, flux_err, Ncells)
     
 
 
 class ClassifyRunner(TrainRunner):
 
+    @timeit
     def initialize(self):
 
         DEEP = self.get_deep_fluxes(self.deep_catalog_path, self.balrog_catalog_path)
@@ -249,40 +284,62 @@ class ClassifyRunner(TrainRunner):
 
     def classify(self, start, end, mode = 'DEEP'):
 
-        SOM_weights = np.load(self.output_dir + '/%s_SOM.npy' % mode,           mmap_mode = 'r')[start:end]
-        flux        = np.load(self.output_dir + '/%s_DATA_FLUX.npy' % mode,     mmap_mode = 'r')[start:end]
-        flux_err    = np.load(self.output_dir + '/%s_DATA_FLUX_ERR.npy' % mode, mmap_mode = 'r')[start:end]
+        if mode == 'BALROG':
+            SOM_weights = np.load(self.output_dir + '/WIDE_SOM_weights.npy', mmap_mode = 'r')
+        else:
+            SOM_weights = np.load(self.output_dir + '/%s_SOM_weights.npy' % mode, mmap_mode = 'r')
+        
+        flux     = np.load(self.output_dir + '/%s_DATA_FLUX.npy' % mode,     mmap_mode = 'r')[start:end]
+        flux_err = np.load(self.output_dir + '/%s_DATA_FLUX_ERR.npy' % mode, mmap_mode = 'r')[start:end]
 
-        Nproc = os.cpu_count()
+        end   = np.min([end, flux.shape[0]])
+        Nproc = np.max([os.cpu_count(), flux.shape[0]//1_000_000 + 1])
         inds  = np.array_split(np.arange(start, end), Nproc)
 
+        print("RUNNING WITH NJOBS:", Nproc)
+        som   = SOM.Classifier(som_weights = SOM_weights) #Build classifier first, as its faster
+        
         #Temp func to run joblib
         def _func_(i):
-            cell_id_i = SOM.ClassifySOM(flux[inds[i], :], flux_err[inds[i], :], som_weights = SOM_weights)
+            cell_id_i = som.classify(flux[inds[i], :], flux_err[inds[i], :])
             return i, cell_id_i
 
         with joblib.parallel_backend("loky"):
             jobs    = [joblib.delayed(_func_)(i) for i in range(Nproc)]
-            outputs = joblib.Parallel(n_jobs = -1, verbose=10)(jobs)
+            outputs = joblib.Parallel(n_jobs = 10, verbose=10,)(jobs)
 
             cell_id = np.zeros(flux.shape[0])
-            for o in outputs: cell_id[inds[o[0]]] = o[1]
+            for o in outputs: cell_id[inds[o[0]]] = o[1][0]
 
         return start, end, cell_id
     
 
-
+    @timeit
     def classify_deep(self):
 
         #We do deep fields all at once, so let start/end be the full array
         CELL = self.classify(0, int(1e10), 'DEEP')
-        np.save(self.output_dir + '/collated_deep_classifier.npy', CELL)
+        np.save(self.output_dir + '/collated_deep_classifier.npy', CELL[-1])
 
+        
+    @timeit
+    def classify_wide(self):
+        CELL = self.classify(0, int(1e10), 'WIDE')
+        np.save(self.output_dir + '/collated_wide_classifier.npy', CELL[-1])
+        
+
+    @timeit
+    def classify_balrog(self, start, end):
+        CELL = self.classify(0, int(1e10), 'BALROG')
+        np.save(self.output_dir + '/collated_balrog_classifier.npy', CELL[-1])
     
-    def classify_wide(self, start, end):
+    
+    @timeit
+    def classify_wide_split(self, start, end):
         return self.classify(start, end, 'WIDE')
 
-    def classify_balrog(self, start, end):
+    @timeit
+    def classify_balrog_split(self, start, end):
         return self.classify(start, end, 'BROG')
 
 
@@ -292,9 +349,9 @@ class ClassifyRunner(TrainRunner):
             folder_name = mode.lower()
 
         #Make some dirs for storing the job files, log files, and output
-        jobdir = self.output_dir + '/%s_jobs/' % mode; os.makedirs(jobdir)
-        logdir = self.output_dir + '/%s_logs/' % mode; os.makedirs(logdir)
-        outdir = self.output_dir + '/%s/' % folder_name; os.makedirs(outdir)
+        jobdir = self.output_dir + '/%s_jobs/' % mode; os.makedirs(jobdir, exist_ok = True)
+        logdir = self.output_dir + '/%s_logs/' % mode; os.makedirs(logdir, exist_ok = True)
+        outdir = self.output_dir + '/%s/' % folder_name; os.makedirs(outdir, exist_ok = True)
         
 
         text = """#!/bin/bash
@@ -306,7 +363,7 @@ class ClassifyRunner(TrainRunner):
 #SBATCH --ntasks-per-node=28
 #SBATCH --time=2:00:00
 
-source ${HOME}shear_bash_profile.sh
+source ${HOME}/shear_bash_profile.sh
 
 RUNNER = %(RUNNER_PATH)s
 
@@ -320,7 +377,7 @@ python -u ${RUNNER} --ClassifyRunner --%(MODE)s --start %(START)d --end %(END)d 
                 'MODE': mode.upper()}
 
         Ngal = len(np.load(self.output_dir + '/%s_DATA_FLUX.npy' % mode.upper()))
-        Ngal_per_job = 2_000_000
+        Ngal_per_job = 5_000_000
 
         i, N_i = 0, 0
         while N_i < Ngal:
@@ -354,7 +411,6 @@ done
 
     def make_balrog_jobs(self):
         self.make_jobs("BALROG", folder_name = "balrog_classifier")
-
 
 
     def collate_jobs(self, folder_name):
@@ -451,6 +507,7 @@ class BinRunner(TrainRunner):
         
         return Wide_bins.reshape(SOMsize, SOMsize)
 
+    
     @timeit
     def make_nz(self, z_bins, z_grid,
                 balrog_classified_df, deep_classified_df, wide_classified_df):
@@ -498,7 +555,7 @@ class BinRunner(TrainRunner):
 
             Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
             Balrog_df = Balrog_df[Balrog_df['purity'] == True] #This needs to be happen at the very start
-            Cuts = Cuts = {'ID' : np.load('/project/chihway/raulteixeira/data/BalrogoftheDECADE_121723_detected_ids.npz')['arr_0']}
+            Cuts = {'ID' : np.load('/project/chihway/raulteixeira/data/BalrogoftheDECADE_121723_detected_ids.npz')['arr_0']}
             Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
         
             Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], 
@@ -657,6 +714,7 @@ if __name__ == '__main__':
 
     #Metaparams
     my_parser.add_argument('--TrainRunner',    action = 'store_true', default = False, help = 'Run training module')
+    my_parser.add_argument('--ClassifySetup',  action = 'store_true', default = False, help = 'Setup classify module')
     my_parser.add_argument('--ClassifyRunner', action = 'store_true', default = False, help = 'Run classify module')
     my_parser.add_argument('--BinRunner',      action = 'store_true', default = False, help = 'Run binning/n(z) module')
     my_parser.add_argument('--DEEP',           action = 'store_true', default = False, help = 'Module operates on DEEP galaxies')
@@ -674,3 +732,63 @@ if __name__ == '__main__':
         print('%s : %s'%(p.upper(), args[p]))
     print('-----------------------------')
     print('-----------------------------')
+    
+    
+    my_params = {'seed': 42,
+                 'output_dir' : '/scratch/midway2/dhayaa/SOMPZ/TMP/', 
+                 'deep_catalog_path' : '/project/chihway/raulteixeira/data/deepfields.csv.gz', 
+                 'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20231212.hdf', 
+                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20231216.hdf5'
+                }
+    
+    
+    if args['TrainRunner']:
+        ONE = TrainRunner(**my_params)
+        ONE.go()
+        
+    
+    if args['ClassifySetup']:
+        TWO = ClassifyRunner(**my_params)   
+        TWO.initialize()
+        if args['WIDE']: TWO.make_wide_jobs()
+        if args['BALROG']: TWO.make_balrog_jobs()
+
+        
+    if args['ClassifyRunner']:
+        
+        TWO = ClassifyRunner(**my_params)        
+        if args['DEEP']: TWO.classify_deep()
+            
+        if args['WIDE']: 
+            
+            out  = TWO.classify_wide(args['start'], args['end'])
+            os.makedirs(os.path.join(my_params['output_dir'], 'WIDE'), exist_ok = True)
+            name = os.path.join(my_params['output_dir'], 'WIDE/wide_classifier_%d_%d.npy' % (args['start'], args['end']))
+            np.save(name, out[-1])
+            
+            Ngal = len(np.load(my_params['output_dir'] + '/WIDE_DATA_FLUX.npy'))
+            path = glob.glob(my_params['output_dir'] + '/WIDE/*')
+            Nout = np.concatenate([np.load(f) for f in path], axis = 0).size
+            
+            if Nout == Ngal:
+                TWO.collate_wide()
+            
+            
+        if args['BALROG']: 
+            TWO.classify_balrog(args['start'], args['end'])
+            
+            out  = TWO.classify_balrog(args['start'], args['end'])
+            os.makedirs(os.path.join(my_params['output_dir'], 'BALROG'), exist_ok = True)
+            name = os.path.join(my_params['output_dir'], 'BALROG/balrog_classifier_%d_%d.npy' % (args['start'], args['end']))
+            np.save(name, out[-1])
+            
+            Ngal = len(np.load(my_params['output_dir'] + '/BALROG_DATA_FLUX.npy'))
+            path = glob.glob(my_params['output_dir'] + '/BALROG/*')
+            Nout = np.concatenate([np.load(f) for f in path], axis = 0).size
+            
+            if Nout == Ngal:
+                TWO.collate_balrog()
+            
+        
+        
+        
