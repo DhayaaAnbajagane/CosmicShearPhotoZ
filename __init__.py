@@ -1,1 +1,1 @@
-from . import SOMPZ
+from . import SOMPZ, WZ

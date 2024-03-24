@@ -180,10 +180,9 @@ class TrainRunner:
             #For Balrog, need both ID and tilename to get unique match
             ID = f['id'][:]
             
-            if 'tilename' in f.keys():
-                tilename = f['tilename'][:]
-            else:
-                tilename = None
+            tilename = f['tilename'][:][Mask] if 'tilename' in f.keys() else None
+            true_ra  = f['true_ra'][:][Mask]  if 'true_ra'  in f.keys() else None
+            true_dec = f['true_dec'][:][Mask] if 'true_dec' in f.keys() else None
 
             #These are the fluxes with all metacal cuts applied
             ID     = ID[Mask]
@@ -191,7 +190,7 @@ class TrainRunner:
             flux     = f['mcal_flux_noshear'][:][Mask]
             flux_err = f['mcal_flux_err_noshear'][:][Mask]
 
-        return flux, flux_err, ID, tilename
+        return flux, flux_err, ID, tilename, true_ra, true_dec
     
     
     @timeit
@@ -267,6 +266,13 @@ class TrainRunner:
 
 class ClassifyRunner(TrainRunner):
 
+    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, njobs = 10):
+        
+        self.njobs = njobs
+        
+        super().__init__(seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path)
+        
+    
     @timeit
     def initialize(self):
 
@@ -277,9 +283,11 @@ class ClassifyRunner(TrainRunner):
         for i, l in enumerate(['FLUX', 'FLUX_ERR', 'ID']):
             np.save(self.output_dir + '/DEEP_DATA_%s.npy' % l, DEEP[i])
             np.save(self.output_dir + '/WIDE_DATA_%s.npy' % l, WIDE[i])
-            np.save(self.output_dir + '/BROG_DATA_%s.npy' % l, BROG[i])
+            np.save(self.output_dir + '/BALROG_DATA_%s.npy' % l, BROG[i])
 
-        np.save(self.output_dir + '/BROG_DATA_TILENAME.npy', BROG[3])
+        np.save(self.output_dir + '/BALROG_DATA_TILENAME.npy', BROG[3])
+        np.save(self.output_dir + '/BALROG_DATA_TRUE_RA.npy',  BROG[4])
+        np.save(self.output_dir + '/BALROG_DATA_TRUE_DEC.npy', BROG[5])
     
 
     def classify(self, start, end, mode = 'DEEP'):
@@ -306,7 +314,7 @@ class ClassifyRunner(TrainRunner):
 
         with joblib.parallel_backend("loky"):
             jobs    = [joblib.delayed(_func_)(i) for i in range(Nproc)]
-            outputs = joblib.Parallel(n_jobs = 10, verbose=10,)(jobs)
+            outputs = joblib.Parallel(n_jobs = self.njobs, verbose=10,)(jobs)
 
             cell_id = np.zeros(flux.shape[0])
             for o in outputs: cell_id[inds[o[0]]] = o[1][0]
@@ -329,7 +337,7 @@ class ClassifyRunner(TrainRunner):
         
 
     @timeit
-    def classify_balrog(self, start, end):
+    def classify_balrog(self):
         CELL = self.classify(0, int(1e10), 'BALROG')
         np.save(self.output_dir + '/collated_balrog_classifier.npy', CELL[-1])
     
@@ -434,7 +442,8 @@ class BinRunner(TrainRunner):
     @timeit
     def get_shear_weights(self, S2N, T_over_Tpsf):
         
-        X = np.load('/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/weights_20231212.npy', allow_pickle = True)[()]
+        weight_path = '/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/weights_20231212.npy'
+        X = np.load(weight_path, allow_pickle = True)[()]
         
         S = X['s2n'].flatten()
         T = X['T_over_Tpsf'].flatten()
@@ -460,41 +469,34 @@ class BinRunner(TrainRunner):
         with h5py.File(self.balrog_catalog_path, 'r') as f:
             
             Balrog_df = pd.DataFrame()
-            Balrog_df['ID'] = f['ID'][:][Mask]
-#             Balrog_df['Z']  = f['Z'][:][Mask].astype('float64')
+            Balrog_df['ID'] = f['ID'][:][Mask] #This is deepfield galaxy ID
             Balrog_df['id'] = f['id'][:][Mask]
             Balrog_df['tilename'] = f['tilename'][:][Mask]
             Balrog_df['true_ra']  = f['true_ra'][:][Mask].astype('float64')
             Balrog_df['true_dec'] = f['true_dec'][:][Mask].astype('float64')
             
-        '''
-        DEEP CUTS SOMEWHERE ELSE
-        '''
+        
         deep = pd.read_csv(self.deep_catalog_path)
         Cuts = deep[self.get_deep_sample_cuts(deep)]# = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
         
         print("DEEP", len(deep), "HAS LEN", len(Cuts))
         
-        Cuts = {'ID' : np.load('/project/chihway/raulteixeira/data/BalrogoftheDECADE_121723_detected_ids.npz')['arr_0']}
-        
         Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
         Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
         
         #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
-        Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], how = 'left', 
-                             on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], validate = "1:1")
+        #The only difference is left DF only has Balrog galaxies from deep field objects that are "good"
+        #whereas right DF didn't do this cut
+        Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'true_ra', 'true_dec']], how = 'left', on = ['true_ra', 'true_dec'], validate = "1:1")
         
-        print("I DID THE CUTS")
-
         #For each wide cell, c_hat, find the distribution of deep galaxies in it
         SOMsize   = int(np.ceil(np.sqrt(Balrog_df['cell'].max())))
         Wide_bins = np.zeros(SOMsize * SOMsize, dtype = int).flatten()
         
-        print(z_bins)
         for i in tqdm(range(Wide_bins.size), desc = 'Assign chat to bins'):
 
             Balrog_in_this_cell = Balrog_df['cell'].values == i #Find all balrog injections in this cell
-
+            
             if np.sum(Balrog_in_this_cell) == 0: #If this cell is empty
                 Wide_bins[i] = -99
                 continue
@@ -504,7 +506,6 @@ class BinRunner(TrainRunner):
                 bcounts_in_this_cell  = np.histogram(redshift_in_this_cell, z_bins)[0] #How many deep galaxy counts per z-bin
                 Wide_bins[i]          = np.argmax(bcounts_in_this_cell) #Which bin is most populated by galaxies from this cell?
 
-        
         return Wide_bins.reshape(SOMsize, SOMsize)
 
     
@@ -516,6 +517,7 @@ class BinRunner(TrainRunner):
         
 
         MY_RESULT = {}
+        
         #-------------------------- READ OUT ALL DEEP QUANTITIES --------------------------
         f = pd.read_csv(self.deep_catalog_path).reset_index(drop = True)
         deep_was_detected = self.get_deep_mask(self.deep_catalog_path, self.balrog_catalog_path)
@@ -526,15 +528,13 @@ class BinRunner(TrainRunner):
         assert len(f) == len(deep_was_detected & deep_sample_cuts), "Mask is not right size"
         assert len(Deep_df) == np.sum(deep_was_detected & deep_sample_cuts), "Masked df doesn't have right size"
         
-        Cuts = pd.read_csv('/project/chihway/raulteixeira/data/deepfields_clean.csv.gz')
-        Deep_df = Deep_df[np.isin(Deep_df['ID'], Cuts['ID'])]
-
         #Now check and merge with classifier
-#         assert len(Deep_df) == len(deep_classified_df), "Balrog dataframes %d != %d" %(len(Deep_df), len(deep_classified_df))
-        Deep_df = pd.merge(Deep_df, deep_classified_df[['cell', 'ID']], how = 'right', on = 'ID', suffixes = (None, '_classified'))
-
+        assert len(Deep_df) == len(deep_classified_df), "Deep dataframes sizes %d != %d" %(len(Deep_df), len(deep_classified_df))
+        Deep_df = pd.merge(Deep_df, deep_classified_df[['cell', 'ID']], how = 'left', on = 'ID', suffixes = (None, '_classified'))
 
         print("LOADED DEEP FIELD")
+        
+        
         #-------------------------- READ OUT ALL BALROG QUANTITIES --------------------------
         selection = self.get_wl_sample_mask(self.balrog_catalog_path)
         purity    = self.get_balrog_contam_mask(self.balrog_catalog_path) & self.get_foreground_mask(self.balrog_catalog_path)
@@ -543,9 +543,8 @@ class BinRunner(TrainRunner):
 
             Balrog_df = pd.DataFrame()
             Balrog_df['ID'] = f['ID'][:]
-            Balrog_df['w']  = np.ones(len(Balrog_df))
             Balrog_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:], f['mcal_T_ratio_noshear'][:])
-
+            
             Balrog_df['id']        = f['id'][:]
             Balrog_df['tilename']  = f['tilename'][:]
             Balrog_df['selection'] = selection & (f['detected'][:] == 1)
@@ -553,13 +552,15 @@ class BinRunner(TrainRunner):
             Balrog_df['true_ra']   = f['true_ra'][:]
             Balrog_df['true_dec']  = f['true_dec'][:]
 
+            #Only keep Balrog objects that come from good DF objects
+            #And only objects that have no contamination from real objects/sources
+            Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Deep_df['ID'])]
+            Balrog_df = Balrog_df[Balrog_df['purity'] == True]
+            
+            #Add other columns
             Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
-            Balrog_df = Balrog_df[Balrog_df['purity'] == True] #This needs to be happen at the very start
-            Cuts = {'ID' : np.load('/project/chihway/raulteixeira/data/BalrogoftheDECADE_121723_detected_ids.npz')['arr_0']}
-            Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
-        
-            Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'id', 'tilename', 'ID', 'true_ra', 'true_dec']], 
-                                 how = 'left', on = ['id', 'tilename', 'ID', 'true_ra', 'true_dec'], suffixes = (None, '_classified'), 
+            Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'true_ra', 'true_dec']], 
+                                 how = 'left', on = ['true_ra', 'true_dec'], suffixes = (None, '_classified'), 
                                  validate = "1:1")
         
         print("LOADED BROG FIELD")
@@ -576,12 +577,11 @@ class BinRunner(TrainRunner):
 
             Wide_df = pd.DataFrame()
             Wide_df['id'] = f['id'][:][Mask]
-            Wide_df['w']  = np.ones(len(Wide_df))
-            Wide_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:], f['mcal_T_ratio_noshear'][:])
+            Wide_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:][Mask], f['mcal_T_ratio_noshear'][:][Mask])
 
-#             assert len(Wide_df) == len(wide_classified_df), "Wide dataframes %d != %d" %(len(Wide_df), len(wide_classified_df))
+            assert len(Wide_df) == len(wide_classified_df), "Wide dataframes %d != %d" %(len(Wide_df), len(wide_classified_df))
             Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']], 
-                               how = 'inner', on = 'id', suffixes = (None, '_classified'), validate = "1:1")
+                               how = 'left', on = 'id', suffixes = (None, '_classified'), validate = "1:1")
             
         print("LOADED WIDE FIELD")
         
@@ -600,7 +600,7 @@ class BinRunner(TrainRunner):
         print("DEEP SOM SIZE", DEEPSOMsize)
         print("WIDE SOM SIZE", WIDESOMShape)
 
-        wide_weight   = Wide_df['w'].values * Wide_df['R'].values
+        wide_weight   = Wide_df['w'].values #This already has response in it, so it is weight = R*w
         
         print(wide_weight)
 
@@ -615,6 +615,7 @@ class BinRunner(TrainRunner):
         
         MY_RESULT['p_c_given_shat'] = np.bincount(Deep_df['cell'].values.astype(int), minlength = DEEPSOMsize**2)/len(Deep_df)
         
+        
         #COMPUTE THE SECOND TERM: REDSHIFT DIST. PER DEEP CELL
         Balrog_df_with_deep = pd.merge(Balrog_df, Deep_df[['ID',  'cell']], on = 'ID', suffixes = (None, '_deep'), how = 'left')
         Balrog_df_only_det  = Balrog_df_with_deep[Balrog_df_with_deep['selection'] == True]
@@ -625,15 +626,13 @@ class BinRunner(TrainRunner):
         Balrog_df_only_det  = pd.merge(Balrog_df_only_det, Balrog_total_injs, on = 'ID', how = 'left',)
         Balrog_df_only_det  = pd.merge(Balrog_df_only_det, Balrog_total_dets, on = 'ID', how = 'left',)
         
-        weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
+        weight              = Balrog_df_only_det['w'].values / Balrog_df_only_det['Ninj'].values #w already includes response
         
         p_z_given_c_bhat_shat  = np.zeros([len(z_bins) - 1, DEEPSOMsize * DEEPSOMsize, z_grid.size - 1])
         for b_i in tqdm(range(len(z_bins) - 1), desc = 'compute p_z_per_cell'):
             for c_i in np.arange(DEEPSOMsize * DEEPSOMsize):
-                '''
-                DHAYAA: YOU NEED TO PUT BHAT SELECTION BACK IN HERE!!!!
-                '''
-                bhat_selection = np.ones_like(Balrog_df_only_det['cell'].values.astype(int)).astype(bool) #Wide_bins[Balrog_df_only_det['cell'].values.astype(int)] == b_i
+                
+                bhat_selection = Wide_bins[Balrog_df_only_det['cell'].values.astype(int)] == b_i
                 c_selection    = Balrog_df_only_det['cell_deep'].values == c_i
                 zs_selection   = np.invert(np.isnan(Balrog_df_only_det['Z'].values)) #Only select galaxies with redshifts this time alone
                 selection      = bhat_selection & c_selection & zs_selection       
@@ -648,13 +647,10 @@ class BinRunner(TrainRunner):
                 p_z_given_c_bhat_shat[b_i, c_i, :] /= np.sum(p_z_given_c_bhat_shat[b_i, c_i, :])
                 
         MY_RESULT['p_z_given_c_bhat_shat'] = p_z_given_c_bhat_shat
-#         return Balrog_df_only_det, weight, p_z_given_c_bhat_shat
 
         #COMPUTE THE THIRD TERM: TRANSFER MATRIX
         p_chat_c_given_shat = np.zeros([Wide_bins.size, DEEPSOMsize**2])       
-        
-#         Balrog_df_only_det  = Balrog_df_only_det[(Balrog_df_only_det['cell'] >= 0) & (Balrog_df_only_det['cell_deep'] >= 0)]
-        weight              = (Balrog_df_only_det['w'].values * Balrog_df_only_det['R'].values)/Balrog_df_only_det['Ninj'].values
+        weight              = Balrog_df_only_det['w'].values / Balrog_df_only_det['Ninj'].values
         
         
         ####COMPUTE PART 1 OF THIRD TERM
@@ -691,7 +687,10 @@ class BinRunner(TrainRunner):
         
         MY_RESULT['p_z_given_bhat_shat'] = p_z_given_bhat_shat
 
-        return p_z_given_bhat_shat, MY_RESULT, Balrog_df_only_det
+        MY_RESULT['z_grid'] = z_grid
+        MY_RESULT['z_cen']  = (z_grid[1:]  + z_grid[:-1])/2
+        
+        return p_z_given_bhat_shat, MY_RESULT
 
     
     def postprocess_nz(self, z, list_of_nz):
@@ -714,15 +713,15 @@ if __name__ == '__main__':
 
     #Metaparams
     my_parser.add_argument('--TrainRunner',    action = 'store_true', default = False, help = 'Run training module')
-    my_parser.add_argument('--ClassifySetup',  action = 'store_true', default = False, help = 'Setup classify module')
     my_parser.add_argument('--ClassifyRunner', action = 'store_true', default = False, help = 'Run classify module')
     my_parser.add_argument('--BinRunner',      action = 'store_true', default = False, help = 'Run binning/n(z) module')
     my_parser.add_argument('--DEEP',           action = 'store_true', default = False, help = 'Module operates on DEEP galaxies')
     my_parser.add_argument('--WIDE',           action = 'store_true', default = False, help = 'Module operates on WIDE galaxies')
     my_parser.add_argument('--BALROG',         action = 'store_true', default = False, help = 'Module operates on BALROG galaxies')
 
-    my_parser.add_argument('--start',   action='store', type = int, default = 0,        help = 'first gal_index to process')
-    my_parser.add_argument('--end',     action='store', type = int, default = int(1e9), help = 'last gal_index to process')
+    my_parser.add_argument('--njobs',   action = 'store', type = int, default = 15,       help = 'Number of parallel threads')
+    my_parser.add_argument('--start',   action = 'store', type = int, default = 0,        help = 'first gal_index to process')
+    my_parser.add_argument('--end',     action = 'store', type = int, default = int(1e9), help = 'last gal_index to process')
 
     args = vars(my_parser.parse_args())
     
@@ -735,6 +734,7 @@ if __name__ == '__main__':
     
     
     my_params = {'seed': 42,
+                 'njobs' : args['njobs'],
                  'output_dir' : '/scratch/midway2/dhayaa/SOMPZ/TMP/', 
                  'deep_catalog_path' : '/project/chihway/raulteixeira/data/deepfields.csv.gz', 
                  'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20231212.hdf', 
@@ -743,51 +743,45 @@ if __name__ == '__main__':
     
     
     if args['TrainRunner']:
-        ONE = TrainRunner(**my_params)
+        tmp = {k: v for k, v in my_params.items() if k not in ['njobs']}
+        ONE = TrainRunner(**tmp)
         ONE.go()
         
     
-    if args['ClassifySetup']:
-        TWO = ClassifyRunner(**my_params)   
-        TWO.initialize()
-        if args['WIDE']: TWO.make_wide_jobs()
-        if args['BALROG']: TWO.make_balrog_jobs()
-
-        
     if args['ClassifyRunner']:
-        
-        TWO = ClassifyRunner(**my_params)        
+        tmp = {k: v for k, v in my_params.items() if k not in []}
+        TWO = ClassifyRunner(**tmp)
+        TWO.initialize()
         if args['DEEP']: TWO.classify_deep()
+        if args['BALROG']: TWO.classify_balrog()
+        if args['WIDE']: TWO.classify_wide()
             
-        if args['WIDE']: 
-            
-            out  = TWO.classify_wide(args['start'], args['end'])
-            os.makedirs(os.path.join(my_params['output_dir'], 'WIDE'), exist_ok = True)
-            name = os.path.join(my_params['output_dir'], 'WIDE/wide_classifier_%d_%d.npy' % (args['start'], args['end']))
-            np.save(name, out[-1])
-            
-            Ngal = len(np.load(my_params['output_dir'] + '/WIDE_DATA_FLUX.npy'))
-            path = glob.glob(my_params['output_dir'] + '/WIDE/*')
-            Nout = np.concatenate([np.load(f) for f in path], axis = 0).size
-            
-            if Nout == Ngal:
-                TWO.collate_wide()
-            
-            
-        if args['BALROG']: 
-            TWO.classify_balrog(args['start'], args['end'])
-            
-            out  = TWO.classify_balrog(args['start'], args['end'])
-            os.makedirs(os.path.join(my_params['output_dir'], 'BALROG'), exist_ok = True)
-            name = os.path.join(my_params['output_dir'], 'BALROG/balrog_classifier_%d_%d.npy' % (args['start'], args['end']))
-            np.save(name, out[-1])
-            
-            Ngal = len(np.load(my_params['output_dir'] + '/BALROG_DATA_FLUX.npy'))
-            path = glob.glob(my_params['output_dir'] + '/BALROG/*')
-            Nout = np.concatenate([np.load(f) for f in path], axis = 0).size
-            
-            if Nout == Ngal:
-                TWO.collate_balrog()
+    
+    if args['BinRunner']:
+        tmp   = {k: v for k, v in my_params.items() if k not in ['njobs']}
+        THREE = BinRunner(**tmp)
+        
+        bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
+                                'true_ra'  : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_RA.npy'),
+                                'true_dec' : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_DEC.npy'),
+                                'cell'     : np.load(my_params['output_dir'] + '/collated_balrog_classifier.npy')})
+        
+        dclass  = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
+                                'cell'     : np.load(my_params['output_dir'] + '/collated_deep_classifier.npy')})
+        
+        wclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/WIDE_DATA_ID.npy'),
+                                'cell'     : np.load(my_params['output_dir'] + '/collated_wide_classifier.npy')})
+        
+        z_bins  = [0.0, 0.3639, 0.6143, 0.8558, 2.0]
+        z_grid  = np.arange(0, 5.01, 0.05)
+        nz, RES = THREE.make_nz(z_bins, z_grid, bclass, dclass, wclass)
+        nz      = THREE.postprocess_nz( (z_grid[1:] + z_grid[:-1])/2, nz) #Include normalization and pile-up.
+        
+        np.save(os.path.join(my_params['output_dir'], 'TomoBinAssign.npy'), RES['Wide_bins'])
+        np.save(os.path.join(my_params['output_dir'], 'n_of_z.npy'), nz)
+        np.save(os.path.join(my_params['output_dir'], 'z_grid.npy'), (z_grid[1:] + z_grid[:-1])/2)
+        np.save(os.path.join(my_params['output_dir'], 'IntermediateProducts.npy'), RES, allow_pickle = True)
+        
             
         
         
