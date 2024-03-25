@@ -9,6 +9,16 @@ from tqdm import tqdm
 import time
 
 
+DEEP_COLS = ['ID', 'RA', 'DEC', 'KNN_CLASS', 'TILENAME',
+             'FLAGS', 'FLAGSTR', 'FLAGSTR_NIR', 'FLAGS_NIR', 'MASK_FLAGS', 'MASK_FLAGS_NIR',
+             'BDF_FLUX_DERED_CALIB_U', 'BDF_FLUX_DERED_CALIB_G', 'BDF_FLUX_DERED_CALIB_R',
+             'BDF_FLUX_DERED_CALIB_I', 'BDF_FLUX_DERED_CALIB_Z', 'BDF_FLUX_DERED_CALIB_J', 
+             'BDF_FLUX_DERED_CALIB_H', 'BDF_FLUX_DERED_CALIB_KS', 
+             'BDF_FLUX_ERR_DERED_CALIB_U','BDF_FLUX_ERR_DERED_CALIB_G', 'BDF_FLUX_ERR_DERED_CALIB_R',
+             'BDF_FLUX_ERR_DERED_CALIB_I', 'BDF_FLUX_ERR_DERED_CALIB_Z', 'BDF_FLUX_ERR_DERED_CALIB_J', 
+             'BDF_FLUX_ERR_DERED_CALIB_H', 'BDF_FLUX_ERR_DERED_CALIB_KS', 
+             ]
+
 #For keeping track of how long steps take
 def timeit(func):
     def wrapper(*args, **kwargs):
@@ -81,11 +91,12 @@ class TrainRunner:
         #Deep field bands
         bands = [B.upper() for B in ['u', 'g', 'r', 'i', 'z', 'J', 'H', 'KS']]
 
-        f = pd.read_csv(path)
+        f = pd.read_csv(path, usecols = DEEP_COLS)
 
         flux     = np.array([f['BDF_FLUX_DERED_CALIB_%s' % b].values for b in bands]).T
         flux_err = np.array([f['BDF_FLUX_ERR_DERED_CALIB_%s' % b].values for b in bands]).T
         ID       = f['ID'].values
+        tilename = f['TILENAME'].values
 
         deep_was_detected = self.get_deep_mask(path, balrog_path)
         deep_is_pure      = self.get_deep_sample_cuts(f)
@@ -103,14 +114,15 @@ class TrainRunner:
         flux     = flux[mask]
         flux_err = flux_err[mask]
         ID       = ID[mask]
+        tilename = tilename[mask]
 
-        return flux, flux_err, ID
+        return flux, flux_err, ID, tilename
     
     
     @timeit
     def get_deep_mask(self, path, balrog_path):
 
-        f  = pd.read_csv(path)
+        f  = pd.read_csv(path, usecols = DEEP_COLS)
         ID = f['ID'].values
 
         balrog_gold = (self.get_wl_sample_mask(balrog_path) & 
@@ -143,8 +155,8 @@ class TrainRunner:
         mask &= deep_catalog.MASK_FLAGS==0
         mask &= deep_catalog.FLAGS_NIR==0
         mask &= deep_catalog.FLAGS==0
-        mask &= deep_catalog.FLAGSTR=="b'ok'"
-        mask &= deep_catalog.FLAGSTR_NIR=="b'ok'"
+        mask &= deep_catalog.FLAGSTR=="ok"
+        mask &= deep_catalog.FLAGSTR_NIR=="ok"
         
         deep_bands_ = ["U","G","R","I","Z","J","H","KS"]
         # remove crazy colors, defined as two 
@@ -285,6 +297,8 @@ class ClassifyRunner(TrainRunner):
             np.save(self.output_dir + '/WIDE_DATA_%s.npy' % l, WIDE[i])
             np.save(self.output_dir + '/BALROG_DATA_%s.npy' % l, BROG[i])
 
+        np.save(self.output_dir + '/DEEP_DATA_TILENAME.npy', DEEP[3])
+        
         np.save(self.output_dir + '/BALROG_DATA_TILENAME.npy', BROG[3])
         np.save(self.output_dir + '/BALROG_DATA_TRUE_RA.npy',  BROG[4])
         np.save(self.output_dir + '/BALROG_DATA_TRUE_DEC.npy', BROG[5])
@@ -436,7 +450,6 @@ done
         self.collate_jobs(folder_name = "balrog_classifier")
 
 
-
 class BinRunner(TrainRunner):    
 
     @timeit
@@ -476,7 +489,7 @@ class BinRunner(TrainRunner):
             Balrog_df['true_dec'] = f['true_dec'][:][Mask].astype('float64')
             
         
-        deep = pd.read_csv(self.deep_catalog_path)
+        deep = pd.read_csv(self.deep_catalog_path, usecols = DEEP_COLS)
         Cuts = deep[self.get_deep_sample_cuts(deep)]# = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
         
         print("DEEP", len(deep), "HAS LEN", len(Cuts))
@@ -519,7 +532,7 @@ class BinRunner(TrainRunner):
         MY_RESULT = {}
         
         #-------------------------- READ OUT ALL DEEP QUANTITIES --------------------------
-        f = pd.read_csv(self.deep_catalog_path).reset_index(drop = True)
+        f = pd.read_csv(self.deep_catalog_path, usecols = DEEP_COLS).reset_index(drop = True)
         deep_was_detected = self.get_deep_mask(self.deep_catalog_path, self.balrog_catalog_path)
         deep_sample_cuts  = self.get_deep_sample_cuts(f)
         Deep_df = f[deep_was_detected & deep_sample_cuts]
@@ -736,7 +749,7 @@ if __name__ == '__main__':
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
                  'output_dir' : '/scratch/midway2/dhayaa/SOMPZ/TMP/', 
-                 'deep_catalog_path' : '/project/chihway/raulteixeira/data/deepfields.csv.gz', 
+                 'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
                  'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20231212.hdf', 
                  'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20231216.hdf5'
                 }

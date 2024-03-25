@@ -12,7 +12,9 @@
 
 
 RUNNER=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/DELVERunner.py
+RUNNER2=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/ThreeSDirRunner.py
 
 #python -u $RUNNER --TrainRunner
 #python -u $RUNNER --ClassifyRunner
-python -u $RUNNER --BinRunner
+#python -u $RUNNER --BinRunner
+python -u $RUNNER2 --ZPUncertRunner
