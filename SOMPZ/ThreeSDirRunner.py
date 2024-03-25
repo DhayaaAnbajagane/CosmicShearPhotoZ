@@ -833,6 +833,26 @@ class ThreeSDirRunner(BinRunner):
         return nz_samples_newmethod 
     
     
+    def postprocess_nz(self, z, list_of_nz):
+
+        processed_nz = []
+        for nz in list_of_nz:
+
+            #Ramping, in order to set p(z = 0) --> 0
+            nz *= np.where(z[None, :] <= 0.055, nz * z[None,:]/0.055, 1)
+            
+            #Normalize everything
+            nz /= np.sum(nz)
+            
+            #Now do pileup of everything beyond z > 3.
+            nz[:, np.argmin(np.abs(z - 3))] = np.sum(nz[:, z > 3])
+            
+            #save
+            processed_nz.append(nz)
+
+        return processed_nz
+    
+    
 class ZPUncertRunner(TrainRunner):
     
     
@@ -841,6 +861,7 @@ class ZPUncertRunner(TrainRunner):
         self.njobs    = njobs
         self.Nsamples = Nsamples
         self.sigma_ZP = sigma_ZP
+        self.seed     = seed
         
         self.samples  = self.build_LH()
         
@@ -899,10 +920,14 @@ class ZPUncertRunner(TrainRunner):
         
         offsets = self.samples[ind].reshape(3, 8)
         
-        flux     *= 10**( -0.4*offsets[tiletag - 1, :] )
-        flux_err *= 10**( -0.4*offsets[tiletag - 1, :] )
+        #Only offset the SN field photometry. The COSMOS field is fixed in place.
+        #This is because we are only concerned with the relative differences between
+        #the four fields. So one of them can have fixed photometry
+        flux     *= np.where(tiletag[:, None] > 0, 10**( -0.4*offsets[tiletag - 1, :] ), 1)
+        flux_err *= np.where(tiletag[:, None] > 0, 10**( -0.4*offsets[tiletag - 1, :] ), 1)
         
         return flux, flux_err
+    
 
     def classify(self, ind):
 
@@ -929,7 +954,7 @@ class ZPUncertRunner(TrainRunner):
         
         with joblib.parallel_backend("loky"):
             jobs    = [joblib.delayed(_func_)(i) for i in range(Nproc)]
-            outputs = joblib.Parallel(n_jobs = self.njobs, verbose=0,)(jobs)
+            outputs = joblib.Parallel(n_jobs = self.njobs, verbose=10,)(jobs)
 
             cell_id = np.zeros(flux.shape[0])
             for o in outputs: cell_id[inds[o[0]]] = o[1][0]
@@ -1022,7 +1047,12 @@ if __name__ == '__main__':
                                     'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
             
         
+            #Redshift distrbution is hardcoded in
+            zbins  = np.arange(0.01, 5.05, 0.05)
+            zbinsc = zbins[:-1] + (zbins[1] - zbins[0])/2.
             n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
+            n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
+                
             
             np.save(my_params['output_dir'] + '/ZP/nz_Samp%d.npy' % i, n_of_z)
         

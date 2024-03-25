@@ -711,8 +711,16 @@ class BinRunner(TrainRunner):
         processed_nz = []
         for nz in list_of_nz:
 
+            #Ramping, in order to set p(z = 0) --> 0
+            nz *= np.where(z[None, :] <= 0.055, nz * z[None,:]/0.055, 1)
+            
+            #Normalize everything
             nz /= np.sum(nz)
+            
+            #Now do pileup of everything beyond z > 3.
             nz[np.argmin(np.abs(z - 3))] = np.sum(nz[z > 3])
+            
+            #save
             processed_nz.append(nz)
 
         return processed_nz

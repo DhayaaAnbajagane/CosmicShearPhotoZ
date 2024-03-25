@@ -17,4 +17,5 @@ RUNNER2=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/ThreeSDirRunner.py
 #python -u $RUNNER --TrainRunner
 #python -u $RUNNER --ClassifyRunner
 #python -u $RUNNER --BinRunner
-python -u $RUNNER2 --ZPUncertRunner
+#python -u $RUNNER2 --ZPSetupRunner  --Nsamples 2
+python -u $RUNNER2 --ZPUncertRunner --Nsamples 2
