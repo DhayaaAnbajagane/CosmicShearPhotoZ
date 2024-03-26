@@ -995,10 +995,10 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/scratch/midway2/dhayaa/SOMPZ/TMP/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240325/', 
                  'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
-                 'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20231212.hdf', 
-                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20231216.hdf5',
+                 'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
+                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
                 }
