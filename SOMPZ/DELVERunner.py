@@ -155,8 +155,13 @@ class TrainRunner:
         mask &= deep_catalog.MASK_FLAGS==0
         mask &= deep_catalog.FLAGS_NIR==0
         mask &= deep_catalog.FLAGS==0
-        mask &= deep_catalog.FLAGSTR=="ok"
-        mask &= deep_catalog.FLAGSTR_NIR=="ok"
+        
+        #These two sometimes fail depending on the catalog and what format it writes
+        #string into. Eitherway, this flag is equivalent to the ==0 flags above so
+        #using those instead is better.
+        #mask &= deep_catalog.FLAGSTR=="ok"
+        #mask &= deep_catalog.FLAGSTR_NIR=="ok"
+        
         
         deep_bands_ = ["U","G","R","I","Z","J","H","KS"]
         # remove crazy colors, defined as two 
@@ -712,7 +717,7 @@ class BinRunner(TrainRunner):
         for nz in list_of_nz:
 
             #Ramping, in order to set p(z = 0) --> 0
-            nz *= np.where(z[None, :] <= 0.055, nz * z[None,:]/0.055, 1)
+            nz *= np.where(z <= 0.055, nz * z/0.055, 1)
             
             #Normalize everything
             nz /= np.sum(nz)
