@@ -283,9 +283,10 @@ class TrainRunner:
 
 class ClassifyRunner(TrainRunner):
 
-    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, njobs = 10):
+    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, redshift_catalog_path, njobs = 10):
         
         self.njobs = njobs
+        self.redshift_catalog_path = redshift_catalog_path
         
         super().__init__(seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path)
         
@@ -460,7 +461,7 @@ class BinRunner(TrainRunner):
     @timeit
     def get_shear_weights(self, S2N, T_over_Tpsf):
         
-        weight_path = '/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/weights_20231212.npy'
+        weight_path = __file__ + '/../../weights_20231212.npy'
         X = np.load(weight_path, allow_pickle = True)[()]
         
         S = X['s2n'].flatten()
@@ -500,7 +501,7 @@ class BinRunner(TrainRunner):
         print("DEEP", len(deep), "HAS LEN", len(Cuts))
         
         Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
-        Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
+        Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
         
         #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
         #The only difference is left DF only has Balrog galaxies from deep field objects that are "good"
@@ -576,7 +577,7 @@ class BinRunner(TrainRunner):
             Balrog_df = Balrog_df[Balrog_df['purity'] == True]
             
             #Add other columns
-            Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
+            Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
             Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'true_ra', 'true_dec']], 
                                  how = 'left', on = ['true_ra', 'true_dec'], suffixes = (None, '_classified'), 
                                  validate = "1:1")
@@ -764,12 +765,13 @@ if __name__ == '__main__':
                  'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240325/', 
                  'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
                  'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
-                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5'
+                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',
+                 'redshift_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz',
                 }
     
     
     if args['TrainRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in ['njobs']}
+        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'redshift_catalog_path']}
         ONE = TrainRunner(**tmp)
         ONE.go()
         

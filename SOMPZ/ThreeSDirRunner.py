@@ -63,7 +63,6 @@ class ThreeSDirRunner(BinRunner):
             Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Deep_df['ID'])]
             Balrog_df = Balrog_df[Balrog_df['purity'] == True]
             
-            Balrog_df = pd.merge(Balrog_df, pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')[['ID', 'Z']], on = "ID", how = 'left')
             Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'true_ra', 'true_dec']], 
                                  how = 'left', on = ['true_ra', 'true_dec'], suffixes = (None, '_classified'), 
                                  validate = "1:1")
@@ -107,7 +106,7 @@ class ThreeSDirRunner(BinRunner):
         Deep_df['cell_deep'] = Deep_df['cell']
         Deep_df['true_id']   = Deep_df['ID']
         
-        Z_df    = pd.read_csv('/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz')
+        Z_df    = pd.read_csv(self.redshift_catalog_path)
         Deep_df = pd.merge(Deep_df, Z_df[['ID', 'Z']], on = "ID", how = 'left')
 
         return Deep_df
@@ -140,14 +139,11 @@ class ThreeSDirRunner(BinRunner):
         balrog_data['weight_response_shear'] = balrog_data['injection_counts']*balrog_data['overlap_weight']
         balrog_data = pd.merge(balrog_data, spec_data[['ID', 'cell_deep', 'Z']], on = 'ID', how = 'left')
         
-#         balrog_data = balrog_data[(balrog_data['cell_wide_unsheared'] > -1) & (balrog_data['cell_deep'] > -1)]
-        
         spec_data = pd.merge(spec_data, balrog_data[['ID','overlap_weight', 'injection_counts', 'cell_wide_unsheared']], on = 'ID', how = 'right')
         
         ## This computes the lensingXresponse weight for each galaxy, removing the Balrog injection rate.
         spec_data['weight_response_shear'] = spec_data['injection_counts']*spec_data['overlap_weight']
-        spec_data = spec_data[(spec_data['cell_wide_unsheared'] > -1) & (spec_data['cell_deep'] > -1)]
-
+        
         ### Load dictionary containing which wide cells belong to which tomographic bin
         bins = self.make_bins(balrog_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
         tomo_bins_wide_modal_even = np.array([np.where(bins == i)[0] for i in range(4)])
@@ -852,8 +848,27 @@ class ThreeSDirRunner(BinRunner):
 
         return processed_nz
     
+
+class ThreeSDirRedbiasRunner(ThreeSDirRunner):
     
-class ZPUncertRunner(TrainRunner):
+    def __init__(self, bias_function, Nsamples = 1e2, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
+        
+        self.bias_function = bias_function
+        
+        super().__init__(Nsamples, z_bin_edges, **kwargs)
+        
+        
+    @timeit
+    def get_deep_catalog(self,  deep_classified_df):
+
+        Deep_df = super().get_deep_catalog(deep_classified_df)
+        Deep_df = self.bias_function(Deep_df)
+
+        return Deep_df
+        
+    
+
+class ZPOffsetRunner(TrainRunner):
     
     
     def __init__(self, seed, Nsamples, sigma_ZP, output_dir, deep_catalog_path, balrog_catalog_path, njobs = 10):
@@ -976,8 +991,9 @@ if __name__ == '__main__':
 
     #Metaparams
     my_parser.add_argument('--ZPSetupRunner',   action = 'store_true', default = False, help = 'Setup ZP uncertainty module')
-    my_parser.add_argument('--ZPUncertRunner',  action = 'store_true', default = False, help = 'Run ZP uncertainty module')
+    my_parser.add_argument('--ZPOffsetRunner',  action = 'store_true', default = False, help = 'Run ZP uncertainty module')
     my_parser.add_argument('--ThreeSDirRunner', action = 'store_true', default = False, help = 'Run 3sDir module')
+    my_parser.add_argument('--ThreeSDirRedbiasRunner', action = 'store_true', default = False, help = 'Run 3sDir module with z-bias')
     
     
     my_parser.add_argument('--Nsamples', action = 'store', type = int, default = 5,       help = 'Number of ZP samples to make')
@@ -999,6 +1015,7 @@ if __name__ == '__main__':
                  'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
                  'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
                  'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',
+                 'redshift_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz',
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
                 }
@@ -1023,15 +1040,15 @@ if __name__ == '__main__':
         ONE.go()
 
         
-    if args['ZPSetupRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path']}
-        ONE = ZPUncertRunner(**tmp)
+    if args['ZPOffsetRunner']:
+        tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path', 'redshift_catalog_path']}
+        ONE = ZPOffsetRunner(**tmp)
         ONE.go()
         
         
     if args['ZPUncertRunner']:
         
-        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
+        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples', 'redshift_catalog_path']}
         ONE = ThreeSDirRunner(**tmp)
         
         bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
