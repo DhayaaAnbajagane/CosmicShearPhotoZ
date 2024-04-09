@@ -1,5 +1,5 @@
-import SOM
-import numpy as np, pandas as pd, h5py
+from SOM import TrainSOM, Classifier
+import numpy as np, pandas as pd, h5py, healpy as hp
 from scipy import interpolate
 import argparse
 import os
@@ -124,7 +124,17 @@ class TrainRunner:
 
         f  = pd.read_csv(path, usecols = DEEP_COLS)
         ID = f['ID'].values
+        
+        #In Y3, some CCDs have bad chips. So we remove deepfield objects associated with those CCDs alone.
+        BAD_CHIPS = ["SN-C3_C01", "SN-C3_C06", "SN-C3_C11", "SN-C3_C54", "SN-C3_C55", "SN-C3_C57", "SN-C3_C58", "SN-C3_C62",
+             
+                     "SN-X3_C10", "SN-X3_C12", "SN-X3_C15", "SN-X3_C19", "SN-X3_C29", "SN-X3_C46", 
+                     "SN-X3_C47", "SN-X3_C49", "SN-X3_C52", "SN-X3_C60", "SN-X3_C62",
 
+                     "SN-E2_C11", "SN-E2_C41", "SN-E2_C49",]
+        
+        deep_GOOD = np.invert(np.isin(f['TILENAME'].values, BAD_CHIPS))
+        
         balrog_gold = (self.get_wl_sample_mask(balrog_path) & 
                        self.get_foreground_mask(balrog_path) & 
                        self.get_balrog_contam_mask(balrog_path))
@@ -139,8 +149,9 @@ class TrainRunner:
         balrog_ID = np.unique(balrog_ID[Mask])
         
         deep_was_detected = np.isin(ID, balrog_ID)
-
-        return deep_was_detected
+        
+        
+        return deep_was_detected & deep_GOOD
     
     
     @timeit
@@ -230,7 +241,7 @@ class TrainRunner:
         with h5py.File(path, 'r') as f:
             with np.errstate(invalid = 'ignore', divide = 'ignore'):
         
-                flux_r, flux_i, flux_z = f[f'mcal_flux_{label}_dered_sfd98'][:].T.astype(np.float32)
+                flux_r, flux_i, flux_z = f[f'mcal_flux_{label}_dered_sfd98'][:].T
                 
                 mag_r = 30 - 2.5*np.log10(flux_r)
                 mag_i = 30 - 2.5*np.log10(flux_i)
@@ -244,17 +255,15 @@ class TrainRunner:
 
                 del mag_i, mag_z
                 
-                SNR     = f[f'mcal_s2n_{label}'][:].astype(np.float32)
-                T_ratio = f[f'mcal_T_ratio_{label}'][:].astype(np.float32)
-                T       = f[f'mcal_T_{label}'][:].astype(np.float32)
+                SNR     = f[f'mcal_s2n_{label}'][:]
+                T_ratio = f[f'mcal_T_ratio_{label}'][:]
+                T       = f[f'mcal_T_{label}'][:]
                 flags   = f['mcal_flags'][:]
-                sg      = f['FLAGS_SG_BDF'][:] if 'FLAGS_SG_BDF' in f.keys() else np.ones_like(SNR)*99 #Need if/else because Balrog doesn't have sg_bdf
                 g1, g2  = f[f'mcal_g_{label}'][:].T
 
                 #Metacal cuts based on DES Y3 ones (from here: https://des.ncsa.illinois.edu/releases/y3a2/Y3key-catalogs)
                 Tratio_Mask= T_ratio > 0.5; del T_ratio
                 Flag_Mask  = flags == 0; del flags
-                SG_Mask = sg >= 4; del sg
                 SNR_Mask   = (SNR > 10) & (SNR < 1000)
                 T_Mask     = T < 10
                 
@@ -262,22 +271,37 @@ class TrainRunner:
 
                 del g1, g2, mag_r, T
                 
-                Mask = mcal_pz_mask & SNR_Mask & Tratio_Mask & T_Mask & Flag_Mask & Other_Mask & SG_Mask
+                Mask = mcal_pz_mask & SNR_Mask & Tratio_Mask & T_Mask & Flag_Mask & Other_Mask
 
         return Mask
+    
     
     @timeit
     def get_foreground_mask(self, path):
 
+        Badcolor_map = hp.read_map('/project2/kadrlica/chinyi/DELVE_DR3_1_bad_colour_mask.fits', dtype = int)
+        
         with h5py.File(path, 'r') as f:
-            FG_Mask = f['FLAGS_FOREGROUND'][:] == 0
+            FG_mask = f['FLAGS_FOREGROUND'][:] == 0
             
-        return FG_Mask
+            
+            if 'RA' in f.keys():
+                Region_mask = np.invert(f['DEC'][:] > np.where(f['RA'][:] < 225, 30 - (30 - 12)/(225 - 200) * (f['RA'][:] - 200), 12.))
+                pix_assign  = hp.ang2pix(hp.npix2nside(Badcolor_map.size), f['RA'][:], f['DEC'][:], lonlat = True)
+            else:
+                Region_mask = np.invert(f['true_dec'][:] > np.where(f['true_ra'][:] < 225, 30 - (30 - 12)/(225 - 200) * (f['true_ra'][:] - 200), 12.))
+                pix_assign  = hp.ang2pix(hp.npix2nside(Badcolor_map.size), f['true_ra'][:], f['true_dec'][:], lonlat = True)
+                
+            Color_mask = Badcolor_map[pix_assign] == 0; del pix_assign
+        
+        Mask = FG_mask & Region_mask & Color_mask; del Badcolor_map, FG_mask, Region_mask, Color_mask
+        
+        return Mask
 
 
     def trainSOM(self, flux, flux_err, Ncells):
 
-        return SOM.TrainSOM(flux, flux_err, Ncells)
+        return TrainSOM(flux, flux_err, Ncells)
     
 
 
@@ -325,7 +349,7 @@ class ClassifyRunner(TrainRunner):
         inds  = np.array_split(np.arange(start, end), Nproc)
 
         print("RUNNING WITH NJOBS:", Nproc)
-        som   = SOM.Classifier(som_weights = SOM_weights) #Build classifier first, as its faster
+        som   = Classifier(som_weights = SOM_weights) #Build classifier first, as its faster
         
         #Temp func to run joblib
         def _func_(i):
@@ -456,12 +480,12 @@ done
         self.collate_jobs(folder_name = "balrog_classifier")
 
 
-class BinRunner(TrainRunner):    
+class BinRunner(ClassifyRunner):    
 
     @timeit
     def get_shear_weights(self, S2N, T_over_Tpsf):
         
-        weight_path = __file__ + '/../../weights_20231212.npy'
+        weight_path = os.path.dirname(__file__) + '/../weights_20240209.npy'
         X = np.load(weight_path, allow_pickle = True)[()]
         
         S = X['s2n'].flatten()
@@ -762,7 +786,7 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240325/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240408/', 
                  'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
                  'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
                  'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',

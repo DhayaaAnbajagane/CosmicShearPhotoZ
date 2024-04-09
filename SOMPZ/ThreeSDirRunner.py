@@ -13,12 +13,14 @@ today = today.strftime('%B%d')
 
 from multiprocessing import Pool
 
-import SOM
+from SOM import Classifier
 from DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
 
 class ThreeSDirRunner(BinRunner):
     
     def __init__(self, Nsamples = 1e2, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
+        
+        print(kwargs)
         
          ### This will produce Nsamples X 64 samples
         self.Nsamples = int(Nsamples)
@@ -838,7 +840,7 @@ class ThreeSDirRunner(BinRunner):
             nz *= np.where(z[None, :] <= 0.055, nz * z[None,:]/0.055, 1)
             
             #Normalize everything
-            nz /= np.sum(nz)
+            nz /= np.sum(nz, axis = -1)[..., None]
             
             #Now do pileup of everything beyond z > 3.
             nz[:, np.argmin(np.abs(z - 3))] = np.sum(nz[:, z > 3])
@@ -959,7 +961,7 @@ class ZPOffsetRunner(TrainRunner):
         
         Nproc = np.max([os.cpu_count(), flux.shape[0]//1_000_000 + 1])
         inds  = np.array_split(np.arange(start, end), Nproc)
-        som   = SOM.Classifier(som_weights = SOM_weights) #Build classifier first, as its faster
+        som   = Classifier(som_weights = SOM_weights) #Build classifier first, as its faster
         
         #Temp func to run joblib
         def _func_(i):
@@ -990,8 +992,8 @@ if __name__ == '__main__':
     my_parser = argparse.ArgumentParser()
 
     #Metaparams
-    my_parser.add_argument('--ZPSetupRunner',   action = 'store_true', default = False, help = 'Setup ZP uncertainty module')
-    my_parser.add_argument('--ZPOffsetRunner',  action = 'store_true', default = False, help = 'Run ZP uncertainty module')
+    my_parser.add_argument('--ZPOffsetRunner',  action = 'store_true', default = False, help = 'Setup ZP uncertainty module')
+    my_parser.add_argument('--ZPUncertRunner',  action = 'store_true', default = False, help = 'Run ZP uncertainty module')
     my_parser.add_argument('--ThreeSDirRunner', action = 'store_true', default = False, help = 'Run 3sDir module')
     my_parser.add_argument('--ThreeSDirRedbiasRunner', action = 'store_true', default = False, help = 'Run 3sDir module with z-bias')
     
@@ -1011,7 +1013,7 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240325/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240408/', 
                  'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
                  'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
                  'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',
@@ -1048,7 +1050,7 @@ if __name__ == '__main__':
         
     if args['ZPUncertRunner']:
         
-        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples', 'redshift_catalog_path']}
+        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
         ONE = ThreeSDirRunner(**tmp)
         
         bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
