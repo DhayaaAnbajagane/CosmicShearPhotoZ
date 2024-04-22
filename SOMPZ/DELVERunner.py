@@ -1,4 +1,5 @@
 from SOM import TrainSOM, Classifier
+from Files import my_files
 import numpy as np, pandas as pd, h5py, healpy as hp
 from scipy import interpolate
 import argparse
@@ -199,10 +200,10 @@ class TrainRunner:
 
     
     @timeit
-    def get_wide_fluxes(self, path):
+    def get_wide_fluxes(self, path, label = 'noshear'):
 
         #We check balrog_contam even in data, but the result is always TRUE if its data
-        Mask = self.get_wl_sample_mask(path) & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
+        Mask = self.get_wl_sample_mask(path, label = label) & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
         with h5py.File(path, 'r') as f:
 
             #For Balrog, need both ID and tilename to get unique match
@@ -213,10 +214,10 @@ class TrainRunner:
             true_dec = f['true_dec'][:][Mask] if 'true_dec' in f.keys() else None
 
             #These are the fluxes with all metacal cuts applied
-            ID     = ID[Mask]
+            ID       = ID[Mask]
             
-            flux     = f['mcal_flux_noshear'][:][Mask]
-            flux_err = f['mcal_flux_err_noshear'][:][Mask]
+            flux     = f[f'mcal_flux_{label}_dered_sfd98'][:][Mask]
+            flux_err = f[f'mcal_flux_err_{label}_dered_sfd98'][:][Mask]
 
         return flux, flux_err, ID, tilename, true_ra, true_dec
     
@@ -385,101 +386,55 @@ class ClassifyRunner(TrainRunner):
         CELL = self.classify(0, int(1e10), 'BALROG')
         np.save(self.output_dir + '/collated_balrog_classifier.npy', CELL[-1])
     
+
+
+class ClassifyAllMcalRunner(ClassifyRunner):
     
     @timeit
-    def classify_wide_split(self, start, end):
-        return self.classify(start, end, 'WIDE')
+    def initialize(self, label = 'noshear'):
+
+        WIDE = self.get_wide_fluxes(self.wide_catalog_path, label = label)
+
+        for i, l in enumerate(['FLUX', 'FLUX_ERR', 'ID']):
+            np.save(self.output_dir + f'/WIDE_DATA_{l}_{label}.npy', WIDE[i])
+            
+
+    def classify(self, start, end, label = 'noshear'):
+
+        SOM_weights = np.load(self.output_dir + '/WIDE_SOM_weights.npy', mmap_mode = 'r')
+        
+        flux     = np.load(self.output_dir + f'/WIDE_DATA_FLUX_{label}.npy',     mmap_mode = 'r')[start:end]
+        flux_err = np.load(self.output_dir + f'/WIDE_DATA_FLUX_ERR_{label}.npy', mmap_mode = 'r')[start:end]
+
+        end   = np.min([end, flux.shape[0]])
+        Nproc = np.max([os.cpu_count(), flux.shape[0]//1_000_000 + 1])
+        inds  = np.array_split(np.arange(start, end), Nproc)
+
+        print("RUNNING WITH NJOBS:", Nproc)
+        som   = Classifier(som_weights = SOM_weights) #Build classifier first, as its faster
+        
+        #Temp func to run joblib
+        def _func_(i):
+            cell_id_i = som.classify(flux[inds[i], :], flux_err[inds[i], :])
+            return i, cell_id_i
+
+        with joblib.parallel_backend("loky"):
+            jobs    = [joblib.delayed(_func_)(i) for i in range(Nproc)]
+            outputs = joblib.Parallel(n_jobs = self.njobs, verbose=10,)(jobs)
+
+            cell_id = np.zeros(flux.shape[0])
+            for o in outputs: cell_id[inds[o[0]]] = o[1][0]
+
+        return start, end, cell_id
+    
 
     @timeit
-    def classify_balrog_split(self, start, end):
-        return self.classify(start, end, 'BROG')
-
-
-    def make_jobs(self, mode, folder_name = None):
-
-        if folder_name is None:
-            folder_name = mode.lower()
-
-        #Make some dirs for storing the job files, log files, and output
-        jobdir = self.output_dir + '/%s_jobs/' % mode; os.makedirs(jobdir, exist_ok = True)
-        logdir = self.output_dir + '/%s_logs/' % mode; os.makedirs(logdir, exist_ok = True)
-        outdir = self.output_dir + '/%s/' % folder_name; os.makedirs(outdir, exist_ok = True)
+    def classify_wide(self, label = 'noshear'):
         
-
-        text = """#!/bin/bash
-#SBATCH --job-name %(NAME)s
-#SBATCH --output=%(LOGDIR)s/%(NAME)s.log
-#SBATCH --partition=broadwl
-#SBATCH --account=pi-chihway
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=28
-#SBATCH --time=2:00:00
-
-source ${HOME}/shear_bash_profile.sh
-
-RUNNER = %(RUNNER_PATH)s
-
-python -u ${RUNNER} --ClassifyRunner --%(MODE)s --start %(START)d --end %(END)d --outdir %(OUTDIR)s
-        """
-
-
-        args = {'LOGDIR' : logdir,
-                'OUTDIR' : outdir,
-                'RUNNER_PATH': __file__,
-                'MODE': mode.upper()}
-
-        Ngal = len(np.load(self.output_dir + '/%s_DATA_FLUX.npy' % mode.upper()))
-        Ngal_per_job = 5_000_000
-
-        i, N_i = 0, 0
-        while N_i < Ngal:
-
-            args['NAME']  = '%sclassify_%d_%d' % (mode.upper(), N_i, N_i + Ngal_per_job)
-            args['START'] = N_i
-            args['END']   = np.min([N_i + Ngal_per_job, Ngal])
-
-            with open(jobdir + '/job_batch%03d.sh' % i, 'w') as f:
-
-                f.write(text % args)
-
-            i   += 1
-            N_i += Ngal_per_job
-            
-        #Also make the script needed to submit all the other scripts.
-        with open(jobdir + "/submit.sh", 'w') as f:
+        CELL = self.classify(0, int(1e10), label)
+        np.save(self.output_dir + f'/collated_wide_{label}_classifier.npy', CELL[-1])
         
-            text = """#!/bin/bash
-for f in `ls %s`
-do
-    echo $f
-    sbatch $f
-done
-            """ % (jobdir)
-            f.write(text)
         
-
-    def make_wide_jobs(self):
-        self.make_jobs("WIDE", folder_name = "wide_classifier")
-
-    def make_balrog_jobs(self):
-        self.make_jobs("BALROG", folder_name = "balrog_classifier")
-
-
-    def collate_jobs(self, folder_name):
-
-        outdir = self.output_dir + '/%s/' % folder_name; os.makedirs(outdir)
-        files  = sorted(glob.glob(outdir + "*.npy"))
-
-        output = np.concatenate([np.load(f) for f in files])
-        np.save(self.output_dir + '/collated_%s.npy' % folder_name, output)
-
-    def collate_wide(self):
-        self.collate_jobs(folder_name = "wide_classifier")
-
-    def collate_balrog(self):
-        self.collate_jobs(folder_name = "balrog_classifier")
-
-
 class BinRunner(ClassifyRunner):    
 
     @timeit
@@ -765,10 +720,12 @@ if __name__ == '__main__':
     #Metaparams
     my_parser.add_argument('--TrainRunner',    action = 'store_true', default = False, help = 'Run training module')
     my_parser.add_argument('--ClassifyRunner', action = 'store_true', default = False, help = 'Run classify module')
+    my_parser.add_argument('--AllMcalRunner',  action = 'store_true', default = False, help = 'Run classify module on 5 mcal')
     my_parser.add_argument('--BinRunner',      action = 'store_true', default = False, help = 'Run binning/n(z) module')
     my_parser.add_argument('--DEEP',           action = 'store_true', default = False, help = 'Module operates on DEEP galaxies')
     my_parser.add_argument('--WIDE',           action = 'store_true', default = False, help = 'Module operates on WIDE galaxies')
     my_parser.add_argument('--BALROG',         action = 'store_true', default = False, help = 'Module operates on BALROG galaxies')
+    my_parser.add_argument('--MCAL_TYPE',      action = 'store',      type    = str,   help = 'The type of mcal version to classify')
 
     my_parser.add_argument('--njobs',   action = 'store', type = int, default = 15,       help = 'Number of parallel threads')
     my_parser.add_argument('--start',   action = 'store', type = int, default = 0,        help = 'first gal_index to process')
@@ -787,17 +744,16 @@ if __name__ == '__main__':
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
                  'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240408/', 
-                 'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
-                 'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
-                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',
-                 'redshift_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz',
-                }
+                 }
+    
+    my_params = my_params | my_files
     
     
     if args['TrainRunner']:
         tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'redshift_catalog_path']}
         ONE = TrainRunner(**tmp)
-        ONE.go()
+        if args['DEEP']: ONE.train_deep()
+        if args['WIDE']: ONE.train_wide()
         
     
     if args['ClassifyRunner']:
@@ -809,6 +765,13 @@ if __name__ == '__main__':
         if args['WIDE']: TWO.classify_wide()
             
     
+    if args['AllMcalRunner']:
+        tmp = {k: v for k, v in my_params.items() if k not in []}
+        TWO = ClassifyAllMcalRunner(**tmp)
+        TWO.initialize(label = args['MCAL_TYPE'])
+        TWO.classify_wide(label = args['MCAL_TYPE'])
+        
+        
     if args['BinRunner']:
         tmp   = {k: v for k, v in my_params.items() if k not in ['njobs']}
         THREE = BinRunner(**tmp)

@@ -14,6 +14,7 @@ today = today.strftime('%B%d')
 from multiprocessing import Pool
 
 from SOM import Classifier
+from Files import my_files
 from DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
 
 class ThreeSDirRunner(BinRunner):
@@ -1014,13 +1015,11 @@ if __name__ == '__main__':
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
                  'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240408/', 
-                 'deep_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfield_Y3_allfields.csv', 
-                 'wide_catalog_path' : '/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 
-                 'balrog_catalog_path' : '/project/chihway/dhayaa/DECADE/BalrogOfTheDECADE_20240123.hdf5',
-                 'redshift_catalog_path' : '/project/chihway/dhayaa/DECADE/Imsim_Inputs/deepfields_raw_with_redshifts.csv.gz',
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
                 }
+    
+    my_params = my_params | my_files
     
     
     if args['ThreeSDirRunner']:
