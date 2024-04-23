@@ -456,7 +456,7 @@ class BinRunner(ClassifyRunner):
         
         
     @timeit
-    def make_bins(self, balrog_classified_df,  z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
+    def make_bins_z_bins(self, balrog_classified_df,  z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
         
         TMPDIR = os.environ['TMPDIR']
         
@@ -504,6 +504,77 @@ class BinRunner(ClassifyRunner):
                 bcounts_in_this_cell  = np.histogram(redshift_in_this_cell, z_bins)[0] #How many deep galaxy counts per z-bin
                 Wide_bins[i]          = np.argmax(bcounts_in_this_cell) #Which bin is most populated by galaxies from this cell?
 
+        return Wide_bins.reshape(SOMsize, SOMsize)
+    
+    
+    @timeit
+    def make_bins(self, balrog_classified_df, wide_classified_df, z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
+        
+        print("NOT USING Z_BINS")
+        
+        TMPDIR = os.environ['TMPDIR']
+        
+        Mask = (self.get_wl_sample_mask(self.balrog_catalog_path) & 
+                self.get_foreground_mask(self.balrog_catalog_path) & 
+                self.get_balrog_contam_mask(self.balrog_catalog_path))
+
+        p_chat = np.bincount(wide_classified_df['cell'].values.astype(int), minlength = 32**2)/len(wide_classified_df['cell'].values)
+        
+        with h5py.File(self.balrog_catalog_path, 'r') as f:
+            
+            Balrog_df = pd.DataFrame()
+            Balrog_df['ID'] = f['ID'][:][Mask] #This is deepfield galaxy ID
+            Balrog_df['id'] = f['id'][:][Mask]
+            Balrog_df['tilename'] = f['tilename'][:][Mask]
+            Balrog_df['true_ra']  = f['true_ra'][:][Mask].astype('float64')
+            Balrog_df['true_dec'] = f['true_dec'][:][Mask].astype('float64')
+        
+        
+        deep = pd.read_csv(self.deep_catalog_path, usecols = DEEP_COLS)
+        Cuts = deep[self.get_deep_sample_cuts(deep)]# = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        
+        print("DEEP", len(deep), "HAS LEN", len(Cuts))
+        
+        Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
+        Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
+        
+        #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
+        #The only difference is left DF only has Balrog galaxies from deep field objects that are "good"
+        #whereas right DF didn't do this cut
+        Balrog_df = pd.merge(Balrog_df, balrog_classified_df[['cell', 'true_ra', 'true_dec']], how = 'left', on = ['true_ra', 'true_dec'], validate = "1:1")
+        
+        #For each wide cell, c_hat, find the distribution of deep galaxies in it
+        SOMsize   = int(np.ceil(np.sqrt(Balrog_df['cell'].max())))
+        Wide_bins = np.zeros(SOMsize * SOMsize, dtype = int)
+        median_z  = np.zeros(SOMsize * SOMsize, dtype = float)
+        
+        for i in tqdm(range(Wide_bins.size), desc = 'Compute mean-z per cell'):
+
+            Balrog_in_this_cell   = Balrog_df['cell'].values == i #Find all balrog injections in this cell
+            redshift_in_this_cell = Balrog_df['Z'].values[Balrog_in_this_cell] #Deep/true Redshift of all gals in this cell
+            median_z[i]           = np.nanmedian(redshift_in_this_cell) #Which bin is most populated by galaxies from this cell?
+            
+            if np.sum(Balrog_in_this_cell) == 0: #If this cell is empty
+                median_z[i] = 99.
+                continue
+            
+        
+        b_i = 0
+        tot_prob = 0
+        
+        print("<z>:", median_z)
+        inds = np.argsort(median_z)
+        for i in tqdm(inds, desc = 'Assign cell to bins'):
+            
+            tot_prob += p_chat[i]
+            
+            if tot_prob <= 0.25:
+                Wide_bins[i] = b_i
+            else:
+                print("FILLED UP BIN", b_i, "with max(z) = %0.4f" % median_z[i])
+                b_i += 1
+                tot_prob = 0
+            
         return Wide_bins.reshape(SOMsize, SOMsize)
 
     
@@ -585,7 +656,7 @@ class BinRunner(ClassifyRunner):
         
         #-------------------------- MAKE THE BINNING --------------------------
 
-        Wide_bins     = self.make_bins(balrog_classified_df, z_bins)
+        Wide_bins     = self.make_bins(balrog_classified_df, wide_classified_df, z_bins)
         WIDESOMShape  = Wide_bins.shape
         Wide_bins     = Wide_bins.flatten()
 
