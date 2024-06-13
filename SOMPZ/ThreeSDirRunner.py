@@ -5,7 +5,7 @@ import time, os, pickle, joblib
 import argparse
 import h5py
 from tqdm import tqdm
-from scipy import stats
+from scipy import stats, interpolate
 
 from datetime import datetime
 today = datetime.today()
@@ -110,7 +110,7 @@ class ThreeSDirRunner(BinRunner):
         Deep_df['true_id']   = Deep_df['ID']
         
         Z_df    = pd.read_csv(self.redshift_catalog_path)
-        Deep_df = pd.merge(Deep_df, Z_df[['ID', 'Z']], on = "ID", how = 'left')
+        Deep_df = pd.merge(Deep_df, Z_df[['ID', 'Z', 'SOURCE']], on = "ID", how = 'left')
 
         return Deep_df
     
@@ -148,7 +148,7 @@ class ThreeSDirRunner(BinRunner):
         spec_data['weight_response_shear'] = spec_data['injection_counts']*spec_data['overlap_weight']
         
         ### Load dictionary containing which wide cells belong to which tomographic bin
-        bins = self.make_bins(balrog_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
+        bins = self.make_bins(balrog_classified_df, wide_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
         tomo_bins_wide_modal_even = np.array([np.where(bins == i)[0] for i in range(4)])
 
         
@@ -850,26 +850,7 @@ class ThreeSDirRunner(BinRunner):
             processed_nz.append(nz)
 
         return processed_nz
-    
 
-class ThreeSDirRedbiasRunner(ThreeSDirRunner):
-    
-    def __init__(self, bias_function, Nsamples = 1e2, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
-        
-        self.bias_function = bias_function
-        
-        super().__init__(Nsamples, z_bin_edges, **kwargs)
-        
-        
-    @timeit
-    def get_deep_catalog(self,  deep_classified_df):
-
-        Deep_df = super().get_deep_catalog(deep_classified_df)
-        Deep_df = self.bias_function(Deep_df)
-
-        return Deep_df
-        
-    
 
 class ZPOffsetRunner(TrainRunner):
     
@@ -987,7 +968,25 @@ class ZPOffsetRunner(TrainRunner):
         CELL = self.classify(0, int(1e10), 'DEEP')
         np.save(self.output_dir + '/collated_deep_classifier.npy', CELL[-1])
         
+
+class ThreeSDirRedbiasRunner(ThreeSDirRunner):
+    
+    def __init__(self, bias_function, Nsamples = 1e2, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
         
+        self.bias_function = bias_function
+        
+        super().__init__(Nsamples, z_bin_edges, **kwargs)
+        
+        
+    @timeit
+    def get_deep_catalog(self,  deep_classified_df):
+
+        Deep_df = super().get_deep_catalog(deep_classified_df)
+        Deep_df = self.bias_function(Deep_df)
+
+        return Deep_df
+    
+
 if __name__ == '__main__':
 
     my_parser = argparse.ArgumentParser()
@@ -997,6 +996,7 @@ if __name__ == '__main__':
     my_parser.add_argument('--ZPUncertRunner',  action = 'store_true', default = False, help = 'Run ZP uncertainty module')
     my_parser.add_argument('--ThreeSDirRunner', action = 'store_true', default = False, help = 'Run 3sDir module')
     my_parser.add_argument('--ThreeSDirRedbiasRunner', action = 'store_true', default = False, help = 'Run 3sDir module with z-bias')
+    my_parser.add_argument('--FinalRunner',     action = 'store_true', default = False, help = 'Run 3sDir module with all uncertainties')
     
     
     my_parser.add_argument('--Nsamples', action = 'store', type = int, default = 5,       help = 'Number of ZP samples to make')
@@ -1021,6 +1021,10 @@ if __name__ == '__main__':
     
     my_params = my_params | my_files
     
+    
+    #Redshift distrbution is hardcoded in
+    zbins  = np.arange(0.01, 5.05, 0.05)
+    zbinsc = zbins[:-1] + (zbins[1] - zbins[0])/2.
     
     if args['ThreeSDirRunner']:
         tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
@@ -1065,14 +1069,82 @@ if __name__ == '__main__':
                                     'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
             
         
-            #Redshift distrbution is hardcoded in
-            zbins  = np.arange(0.01, 5.05, 0.05)
-            zbinsc = zbins[:-1] + (zbins[1] - zbins[0])/2.
             n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
             n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
                 
             
             np.save(my_params['output_dir'] + '/ZP/nz_Samp%d.npy' % i, n_of_z)
+            
+            
+    if args['ThreeSDirRedbiasRunner'] | args['FinalRunner']:
+        
+        
+        
+        
+        bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
+                                'true_ra'  : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_RA.npy'),
+                                'true_dec' : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_DEC.npy'),
+                                'cell'     : np.load(my_params['output_dir'] + '/collated_balrog_classifier.npy')})
+        
+        wclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/WIDE_DATA_ID.npy'),
+                                'cell'     : np.load(my_params['output_dir'] + '/collated_wide_classifier.npy')})
+        
+        if args['FinalRunner']:
+            os.makedirs(my_params['output_dir'] + '/Final/', exist_ok = True)
+        elif args['ThreeSDirRedbiasRunner']:
+            os.makedirs(my_params['output_dir'] + '/ZB/', exist_ok = True)
+            
+        
+        for i in range(args['Nsamples']):
+            
+            tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
+            
+            def bias_function(data):
+                
+                SRC = data['SOURCE'].values
+                Z   = data['Z'].values
+                Mi  = 30 - 2.5*np.log10(data['BDF_FLUX_DERED_CALIB_I'].values)
+                
+                seed  = np.random.default_rng(my_params['seed']).integers(0, 2**30, args['Nsamples'])[i]
+                sigma = np.random.default_rng(seed).normal(loc = 0, scale = 1, size = 2)
+                
+                #Do Cosmos-only fist
+                bfile = np.load('/project/chihway/dhayaa/DECADE/Alex_NERSC_files/median_bias_SC.npy')
+                bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0];
+                Z     = np.where( (SRC == 'COSMOS2020')  & (Mi > Mmin) & (Mi < Mmax), Z + bias(Mi) * sigma[0], Z)
+                
+                #Do Cosmos + PAUS next
+                bfile = np.load('/project/chihway/dhayaa/DECADE/Alex_NERSC_files/median_bias_SP.npy'); bfile[-2:, 1] = 0;
+                bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0];
+                Z     = np.where( (SRC == 'PAUS+COSMOS') & (Mi > Mmin) & (Mi < Mmax), Z + bias(Mi) * sigma[1], Z)
+                
+                #Assign back to the deepfields file
+                data['Z'] = Z
+                
+                return data
+            
+            tmp['bias_function'] = bias_function #Supply function as argument to class initialization dict
+            ONE = ThreeSDirRedbiasRunner(**tmp) #Initialize class
+            
+            if args['FinalRunner']:
+                
+                dclass  = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
+                                        'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
+                n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
+                n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
+
+                np.save(my_params['output_dir'] + '/Final/nz_Samp%d.npy' % i, n_of_z)
+            
+                
+            elif args['ThreeSDirRedbiasRunner']:
+
+                dclass  = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
+                                        'cell'     : np.load(my_params['output_dir'] + '/collated_deep_classifier.npy')})
+                
+                n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
+                n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
+
+                np.save(my_params['output_dir'] + '/ZB/nz_Samp%d.npy' % i, n_of_z)
         
         
 
