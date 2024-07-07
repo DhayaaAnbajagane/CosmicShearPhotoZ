@@ -13,9 +13,9 @@ today = today.strftime('%B%d')
 
 from multiprocessing import Pool
 
-from SOM import Classifier
-from Files import my_files
-from DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
+from .SOM import Classifier
+from .Files import my_files
+from .DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
 
 class ThreeSDirRunner(BinRunner):
     

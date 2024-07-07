@@ -1,5 +1,5 @@
 import sys
-from NoiseSOM import NoiseSOM, hFunc, AsinhMetric
+from .NoiseSOM import NoiseSOM, hFunc, AsinhMetric
 import numpy as np
 import scipy
 import os, sys, time

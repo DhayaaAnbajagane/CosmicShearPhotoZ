@@ -1,5 +1,5 @@
-from SOM import TrainSOM, Classifier
-from Files import my_files
+from .SOM import TrainSOM, Classifier
+from .Files import my_files
 import numpy as np, pandas as pd, h5py, healpy as hp
 from scipy import interpolate
 import argparse
