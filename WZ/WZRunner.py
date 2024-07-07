@@ -15,7 +15,7 @@ import pyccl as ccl
 
 class WZRunner:
 
-    def __init__(self, unknown_cat, ref_cat, rand_cat, Mask, R_min, R_max, R_bins, z_min, z_max, z_bins, redshift_mask = False, delta_z = 0.1):
+    def __init__(self, unknown_cat, ref_cat, rand_cat, Mask, R_min, R_max, R_bins, z_min, z_max, z_bins, redshift_mask = False, delta_z = 0.1, Npatch = 100):
 
         self.unknown_cat = unknown_cat
         self.ref_cat     = ref_cat
@@ -34,6 +34,8 @@ class WZRunner:
         
         self.redshift_mask = redshift_mask
         self.delta_z       = delta_z
+        
+        self.Npatch = Npatch
 
 
     def Wz(self, corr):
@@ -82,7 +84,7 @@ class WZRunner:
         os.system('rm %s' %  center_path)
         Nth    = int(len(ra)/10_000_000) #Select every Nth object such that we end up using 10 million to define patches
         if Nth < 1: Nth = 1
-        small_cat = treecorr.Catalog(ra = ra[::Nth], dec = dec[::Nth], ra_units='deg',dec_units='deg', npatch = 100)
+        small_cat = treecorr.Catalog(ra = ra[::Nth], dec = dec[::Nth], ra_units='deg',dec_units='deg', npatch = self.Npatch)
         small_cat.write_patch_centers(center_path)
         
         del ra, dec, small_cat
@@ -211,6 +213,18 @@ class WZRunner:
         W_DM  = np.trapz(wgt * xi_mm, x = theta_bins)
         
         
+        #Now get the n(z)^2 weight
+        ra    = self.ref_cat['ra']
+        dec   = self.ref_cat['dec']
+        m_r   = (self.ref_cat['z'] > z_min) & (self.ref_cat['z'] < z_max) & (self.Mask[hp.ang2pix(self.NSIDE, ra, dec, lonlat  = True)])
+        z_r   = self.ref_cat['z'][m_r]; del ra, dec, m_r
+        
+        z     = np.linspace(z_min, z_max, 11); zmean = (z[1:] + z[:-1])/2
+        nz    = np.histogram(z_r, bins = z, density = True)[0]
+        nz    = nz / np.trapz(nz, zmean) #Normalize distribution
+        nzsq  = np.trapz(nz**2, zmean)
+        
+        
         del cosmo, gal_tracer, Cells, xi_mm
         gc.collect()
         
@@ -239,16 +253,28 @@ class WZRunner:
             wgt  = ang**-1
             wgt  = wgt/np.trapz(wgt, x = ang)
             w_bb = np.trapz(wgt * xi, x = ang)
-            b_z  = np.sqrt(w_bb/W_DM)
+            b_z  = np.sqrt(w_bb/W_DM / nzsq) #Following Eq 6 in 2012.08569
             
             #Finally estimate the Nz
-            Nz   = w_ur / (b_z * W_DM)
+            Nz   = w_ur / (b_z * W_DM) #Following Eq 4 in 2012.08569. Ignoring b_u(z) and magnification
             
             return np.array([Nz, w_ur, b_z, W_DM])
         
         
         return make_wz
     
+    def _generate_covmat_function(self, all_calculators):
+        
+        def make_cov(all_correlators):
+            N_bins = len(all_calculators); assert N_bins == self.z_bins, f"Not enough calculators. Expecting {self.z_bins}, got {N_bins})"
+            corr   = [all_correlators[4*i : 4*(i+1)] for i in range(N_bins)]
+            w_ur   = [cal_i(corr_i)[1] for cal_i, corr_i in zip(all_calculators, corr)]
+        
+            return np.array(w_ur)
+        
+        return make_cov
+    
+        
     def process(self):
 
         cosmo = FlatwCDM(H0 = 70, Om0 = 0.3, w0 = -1)
@@ -266,6 +292,8 @@ class WZRunner:
         
         w_dm  = np.zeros([4, self.z_bins]) + np.NaN
         
+        Cw_ur = np.zeros([4, self.z_bins, self.z_bins]) + np.NaN
+        
         #Setup patches first for jackknifing
         if not self.redshift_mask: self._define_patches()
         
@@ -275,6 +303,8 @@ class WZRunner:
                 if not self.redshift_mask:
                     cat_u = self._get_unknown_cat(b_i)
 
+                all_correlators = []
+                all_calculators = []
                 for z_i in range(z.size -1):
                     
                     if not self.redshift_mask:
@@ -291,7 +321,7 @@ class WZRunner:
 
                     
                     z_mid = (z[z_i] + z[z_i + 1])/2
-                    physical_min, physical_max = 1.5, 5.0 #in Mpc
+                    physical_min, physical_max = self.R_min, self.R_max #in Mpc
                     physical_min = 0.9*physical_min #simply enlarging the bottom and top bins a bit
                     physical_max = 1.1*physical_max 
 
@@ -328,6 +358,9 @@ class WZRunner:
                     
                     w_dm[b_i, z_i]  = w_dm_i
                     
+                    all_correlators.extend(correlators)
+                    all_calculators.append(calculator)
+                    
                     
                     del cat_r, cat_n
                     
@@ -339,14 +372,19 @@ class WZRunner:
                     
                     pbar.update(1)
                     
+                    
+                calculator = self._generate_covmat_function(all_calculators)
+                Cw_ur[b_i] = treecorr.estimate_multi_cov(all_correlators, 'jackknife', func = calculator)
+                    
 
-        DICT = {'N_z':N_z,
-                'dN_z':dN_z,
-                'w_ur':w_ur,
-                'dw_ur':dw_ur,
-                'b_z':b_z,
-                'db_z':db_z,
-                'w_dm':w_dm}
+        DICT = {'N_z'   : N_z,
+                'dN_z'  : dN_z,
+                'w_ur'  : w_ur,
+                'dw_ur' : dw_ur,
+                'b_z'   : b_z,
+                'db_z'  : db_z,
+                'w_dm'  : w_dm,
+                'Cw_ur' : Cw_ur}
 
         return DICT
     
@@ -368,6 +406,7 @@ if __name__ == '__main__':
     my_parser.add_argument('--Count_threshold', action='store', type = int, default = 0)
     my_parser.add_argument('--OutPath', action='store', type = str, required = True)
     my_parser.add_argument('--redshift_mask_deltaz', action='store', type = float, default = 0.1)
+    my_parser.add_argument('--Npatch', action='store', type = int, default = 100)
     
     
     args  = vars(my_parser.parse_args())
@@ -379,13 +418,11 @@ if __name__ == '__main__':
     
     if args['DECADE']:
 
-        with h5py.File('/project/chihway/data/decade/metacal_gold_combined_20231212.hdf', 'r') as f:
+        with h5py.File('/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 'r') as f:
 
             ra      = f['RA'][:]
             dec     = f['DEC'][:]
             w       = f['mcal_g_w'][:]
-
-        with h5py.File('/project/chihway/data/decade/metacal_gold_combined_mask_20231212.hdf', 'r') as f:
 
             Tomobin = f['baseline_mcal_mask_noshear'][:]
 
@@ -498,7 +535,10 @@ if __name__ == '__main__':
     print("MADE BOSS CATALOG")
     
     Runner = WZRunner(Cat, Br_cat, Bn_cat, Mask = Mask, redshift_mask = args['redshift_mask'],
-                      R_min = 1.5, R_max = 5, R_bins = 20, z_min = 0.1, z_max = 1.1, z_bins = 40, delta_z = args['redshift_mask_deltaz'])
+                      R_min = 1.5, R_max = 5, R_bins = 20, 
+                      z_min = 0.11, z_max = 2.11, z_bins = 40, #z_bins has same spacing as SOMPZ (deltaZ = 0.05, minz = 0.01)
+                      delta_z = args['redshift_mask_deltaz'],
+                      Npatch  = args['Npatch'])
     result = Runner.process()
     
     
