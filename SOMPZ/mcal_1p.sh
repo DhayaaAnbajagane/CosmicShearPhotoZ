@@ -11,7 +11,8 @@
 #SBATCH --exclude=midway2-0694
 
 
-RUNNER=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/DELVERunner.py
-RUNNER2=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/ThreeSDirRunner.py
+BASE=/home/dhayaa/Desktop/DECADE/
+RUNNER=CosmicShearPhotoZ.SOMPZ.DELVERunner
+RUNNER2=CosmicShearPhotoZ.SOMPZ.ThreeSDirRunner
 
-python -u $RUNNER --AllMcalRunner --MCAL_TYPE 1p --njobs 15
+PYTHONPATH=$BASE python -m $RUNNER --AllMcalRunner --MCAL_TYPE 1p --njobs 15

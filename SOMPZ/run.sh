@@ -11,17 +11,17 @@
 #SBATCH --exclude=midway2-0696,midway2-0694
 
 
-RUNNER=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/DELVERunner.py
-RUNNER2=/home/dhayaa/Desktop/DECADE/CosmicShearPhotoZ/SOMPZ/ThreeSDirRunner.py
+BASE=/home/dhayaa/Desktop/DECADE/
+RUNNER=CosmicShearPhotoZ.SOMPZ.DELVERunner
+RUNNER2=CosmicShearPhotoZ.SOMPZ.ThreeSDirRunner
 
-#python -u $RUNNER --TrainRunner --WIDE #--DEEP
-#python -u $RUNNER --ClassifyRunner --BALROG --WIDE #--DEEP
-#python -u $RUNNER --BinRunner
 
-#python -u $RUNNER2 --ZPOffsetRunner --Nsamples 100
-#python -u $RUNNER2 --ZPUncertRunner --Nsamples 100
+#PYTHONPATH=$BASE python -m $RUNNER --TrainRunner --WIDE --DEEP
+#PYTHONPATH=$BASE python -m $RUNNER --ClassifyRunner --BALROG --WIDE --DEEP
+#PYTHONPATH=$BASE python -m $RUNNER --BinRunner
 
-#python -u $RUNNER2 --ThreeSDirRedbiasRunner --Nsamples 100
-python -u $RUNNER2 --FinalRunner --Nsamples 100
+PYTHONPATH=$BASE python -m $RUNNER2 --ZPOffsetRunner --Nsamples 100
+PYTHONPATH=$BASE python -m $RUNNER2 --ZPUncertRunner --Nsamples 100
 
-#python -u $RUNNER --AllMcalRunner
+PYTHONPATH=$BASE python -m $RUNNER2 --ThreeSDirRedbiasRunner --Nsamples 100
+PYTHONPATH=$BASE python -m $RUNNER2 --FinalRunner --Nsamples 100
