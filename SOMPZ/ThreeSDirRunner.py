@@ -17,9 +17,10 @@ from .SOM import Classifier
 from .Files import my_files
 from .DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
 
+NSAMPLES_DEFAULT = 1e3
 class ThreeSDirRunner(BinRunner):
     
-    def __init__(self, Nsamples = 1e2, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
+    def __init__(self, Nsamples = NSAMPLES_DEFAULT, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
         
         print(kwargs)
         
@@ -971,7 +972,7 @@ class ZPOffsetRunner(TrainRunner):
 
 class ThreeSDirRedbiasRunner(ThreeSDirRunner):
     
-    def __init__(self, bias_function, Nsamples = 1e2, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
+    def __init__(self, bias_function, Nsamples = NSAMPLES_DEFAULT, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
         
         self.bias_function = bias_function
         
@@ -1000,7 +1001,7 @@ if __name__ == '__main__':
     
     
     my_parser.add_argument('--Nsamples', action = 'store', type = int, default = 5,       help = 'Number of ZP samples to make')
-    my_parser.add_argument('--njobs',    action = 'store', type = int, default = 15,       help = 'Number of parallel threads')
+    my_parser.add_argument('--njobs',    action = 'store', type = int, default = 15,      help = 'Number of parallel threads')
 
     args = vars(my_parser.parse_args())
     
@@ -1046,7 +1047,7 @@ if __name__ == '__main__':
 
         
     if args['ZPOffsetRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path', 'redshift_catalog_path']}
+        tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path', 'redshift_catalog_path', 'tomo_redshift_catalog_path']}
         ONE = ZPOffsetRunner(**tmp)
         ONE.go()
         
@@ -1103,20 +1104,25 @@ if __name__ == '__main__':
                 
                 SRC = data['SOURCE'].values
                 Z   = data['Z'].values
-                Mi  = 30 - 2.5*np.log10(data['BDF_FLUX_DERED_CALIB_I'].values)
+                with np.errstate(divide = 'ignore', invalid = 'ignore'):
+                    Mi  = 30 - 2.5*np.log10(data['BDF_FLUX_DERED_CALIB_I'].values)
                 
                 seed  = np.random.default_rng(my_params['seed']).integers(0, 2**30, args['Nsamples'])[i]
                 sigma = np.random.default_rng(seed).normal(loc = 0, scale = 1, size = 2)
                 
                 #Do Cosmos-only fist
-                bfile = np.load('/project/chihway/dhayaa/DECADE/Alex_NERSC_files/median_bias_SC.npy')
+                bfile = np.loadtxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_Cosmos.txt')
+                bfile = np.stack([bfile[:, 0], np.median(bfile[:, 1:], axis = 1)], axis = 1)
+                bfile = bfile[np.isfinite(bfile[:, 1])]
                 bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0];
-                Z     = np.where( (SRC == 'COSMOS2020')  & (Mi > Mmin) & (Mi < Mmax), Z + bias(Mi) * sigma[0], Z)
+                Z     = np.where( (SRC == 'COSMOS2020')  & (Mi > Mmin) & (Mi < Mmax), Z + (1 + Z) * bias(Mi) * sigma[0], Z)
                 
                 #Do Cosmos + PAUS next
-                bfile = np.load('/project/chihway/dhayaa/DECADE/Alex_NERSC_files/median_bias_SP.npy'); bfile[-2:, 1] = 0;
+                bfile = np.loadtxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_PausCosmos.txt')
+                bfile = np.stack([bfile[:, 0], np.median(bfile[:, 1:], axis = 1)], axis = 1)
+                bfile = bfile[np.isfinite(bfile[:, 1])]
                 bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0];
-                Z     = np.where( (SRC == 'PAUS+COSMOS') & (Mi > Mmin) & (Mi < Mmax), Z + bias(Mi) * sigma[1], Z)
+                Z     = np.where( (SRC == 'PAUS+COSMOS') & (Mi > Mmin) & (Mi < Mmax), Z + (1 + Z) * bias(Mi) * sigma[1], Z)
                 
                 #Assign back to the deepfields file
                 data['Z'] = Z

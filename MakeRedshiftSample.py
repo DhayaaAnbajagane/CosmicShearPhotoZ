@@ -139,7 +139,7 @@ if __name__ == "__main__":
         tmp_i = mag_i[f_mask][inds]
         for i in range(i_bins.size - 1):
             bias[n, i] = np.nanmedian(tmp_z[(tmp_i > i_bins[i]) & (tmp_i < i_bins[i+1])])
-    np.savetxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_Cosmos.npy', 
+    np.savetxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_Cosmos.txt', 
                np.concatenate([i_bcen[:, None], bias.T], axis = 1))
     
     
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         tmp_i = mag_i[f_mask][inds]
         for i in range(i_bins.size - 1):
             bias[n, i] = np.nanmedian(tmp_z[(tmp_i > i_bins[i]) & (tmp_i < i_bins[i+1])])
-    np.savetxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_PausCosmos.npy', 
+    np.savetxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_PausCosmos.txt', 
                np.concatenate([i_bcen[:, None], bias.T], axis = 1))
     
     

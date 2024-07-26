@@ -308,10 +308,9 @@ class TrainRunner:
 
 class ClassifyRunner(TrainRunner):
 
-    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, redshift_catalog_path, njobs = 10):
+    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, njobs = 10):
         
         self.njobs = njobs
-        self.redshift_catalog_path = redshift_catalog_path
         
         super().__init__(seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path)
         
@@ -435,7 +434,15 @@ class ClassifyAllMcalRunner(ClassifyRunner):
         np.save(self.output_dir + f'/collated_wide_{label}_classifier.npy', CELL[-1])
         
         
-class BinRunner(ClassifyRunner):    
+class BinRunner(ClassifyRunner):
+    
+    def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, 
+                 tomo_redshift_catalog_path, redshift_catalog_path, njobs = 10):
+        
+        self.redshift_catalog_path = redshift_catalog_path
+        self.tomo_redshift_catalog_path = tomo_redshift_catalog_path
+        
+        super().__init__(seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, njobs)
 
     @timeit
     def get_shear_weights(self, S2N, T_over_Tpsf):
@@ -475,12 +482,12 @@ class BinRunner(ClassifyRunner):
             
         
         deep = pd.read_csv(self.deep_catalog_path, usecols = DEEP_COLS)
-        Cuts = deep[self.get_deep_sample_cuts(deep)]# = pd.read_csv('/project2/chihway/raulteixeira/data/deepfields_clean.csv.gz')
+        Cuts = deep[self.get_deep_sample_cuts(deep)]
         
         print("DEEP", len(deep), "HAS LEN", len(Cuts))
         
         Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
-        Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
+        Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.tomo_redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
         
         #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
         #The only difference is left DF only has Balrog galaxies from deep field objects that are "good"
@@ -536,7 +543,7 @@ class BinRunner(ClassifyRunner):
         print("DEEP", len(deep), "HAS LEN", len(Cuts))
         
         Balrog_df = Balrog_df[np.isin(Balrog_df['ID'], Cuts['ID'])]
-        Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
+        Balrog_df = pd.merge(Balrog_df, pd.read_csv(self.tomo_redshift_catalog_path)[['ID', 'Z']], on = "ID", how = 'left')
         
         #This treats "Balrog_df" as superior, all galaxies in left_df must be classified and available
         #The only difference is left DF only has Balrog galaxies from deep field objects that are "good"
@@ -821,14 +828,14 @@ if __name__ == '__main__':
     
     
     if args['TrainRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'redshift_catalog_path']}
+        tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'redshift_catalog_path', 'tomo_redshift_catalog_path']}
         ONE = TrainRunner(**tmp)
         if args['DEEP']: ONE.train_deep()
         if args['WIDE']: ONE.train_wide()
         
     
     if args['ClassifyRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in []}
+        tmp = {k: v for k, v in my_params.items() if k not in ['redshift_catalog_path', 'tomo_redshift_catalog_path']}
         TWO = ClassifyRunner(**tmp)
         TWO.initialize()
         if args['DEEP']: TWO.classify_deep()
@@ -837,7 +844,7 @@ if __name__ == '__main__':
             
     
     if args['AllMcalRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in []}
+        tmp = {k: v for k, v in my_params.items() if k not in ['redshift_catalog_path', 'tomo_redshift_catalog_path']}
         TWO = ClassifyAllMcalRunner(**tmp)
         TWO.initialize(label = args['MCAL_TYPE'])
         TWO.classify_wide(label = args['MCAL_TYPE'])
