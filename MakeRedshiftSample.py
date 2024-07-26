@@ -74,9 +74,9 @@ if __name__ == "__main__":
     
     #Cosmos also loaded separately
     cosmos = fitsio.read(cosmosfile, columns = ['FLAG_COMBINED', 'lp_type', 'lp_mask', 'ID', 'lp_zPDF', 'alpha_j2000', 'delta_j2000'])
-#     cosmos = cosmos[cosmos['FLAG_COMBINED'] == 0]
-#     cosmos = cosmos[cosmos['lp_type'] == 0]
-#     cosmos = cosmos[cosmos['lp_mask'] == 0]
+    cosmos = cosmos[cosmos['FLAG_COMBINED'] == 0]
+    cosmos = cosmos[cosmos['lp_type'] == 0]
+    cosmos = cosmos[cosmos['lp_mask'] == 0]
     cosmos = pd.DataFrame(cosmos); print("FINISHED LOADING COSMOS")
     
     #Finally load PAUS+COSMOS separately
