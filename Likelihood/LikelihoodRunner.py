@@ -1,7 +1,7 @@
 import numpy as np
 from scipy import interpolate, stats
 import joblib
-import os, sys
+import os, sys, glob, argparse, gc
 from tqdm import tqdm
 
 import pyccl as ccl
@@ -25,10 +25,10 @@ class WZLikelihoodRunner(object):
         self.R_bins = R_bins
         
         #Systematic params to marginalize over
-        self.s_mu    = s_mu
-        self.s_sig   = s_sig
-        self.b_u     = b_u
-        self.b_u_sig = b_u_sig
+        self.s_mu        = s_mu
+        self.s_sig       = s_sig
+        self.b_u         = b_u
+        self.b_u_sig     = b_u_sig
         self.alpha_u     = alpha_u
         self.alpha_u_sig = alpha_u_sig
         
@@ -140,6 +140,7 @@ class WZLikelihoodRunner(object):
         s0 = self.q[:self.order] * 1
         old_lnlk = np.inf
         m1, m2   = self.get_m1_m2(self.Dij, nz)
+        q        = self.q.copy()
         
         #Start iterations to find the maxlike point
         for iterations in range(self.Niter):
@@ -152,8 +153,8 @@ class WZLikelihoodRunner(object):
             A = np.zeros([len(self.Wz), self.order + 2], dtype = float)
             
             A[:, :self.order]    = self.sysf.T   * wtheory[:, None] #derivative of theory w.r.t sys func
-            A[:, self.order]     = self.b_r      * np.sum(m1 * nz) #derivative w.r.t alpha_u
-            A[:, self.order + 1] = self.alpha_r  * np.sum(m2 * nz) #derivative w.r.t b_u
+            A[:, self.order]     = self.b_r      * np.sum(m1 * nz)  #derivative w.r.t alpha_u
+            A[:, self.order + 1] = self.alpha_r  * np.sum(m2 * nz)  #derivative w.r.t b_u
             
             
             #Compute the constant vector, c. We don't use magnification params when
@@ -162,17 +163,16 @@ class WZLikelihoodRunner(object):
             
             
             #That's it, now compute the likelihood. This time also using magnification
-            delta = c - A @ self.q
+            delta = c - A @ q
             cov   = np.einsum('ij,j,kj', A, self.q_sig**2, A) + self.C_Wz
-            lnlk  = np.dot(delta, np.linalg.solve(cov, delta)) #Use solve for inverting the matrix. Y3 does it this way :P
+            #lnlko = np.dot(delta, np.linalg.solve(cov, delta)) #Use solve for inverting the matrix. Y3 does it this way :P
             
             #B and d are just some names I make up for the vectors/matrices
             B = A.T @ self.inv_C_Wz @ A + np.diag(1/self.q_sig**2)
-            d = A.T @ self.inv_C_Wz @ c + 1/self.q_sig**2 * self.q
+            d = A.T @ self.inv_C_Wz @ c + 1/self.q_sig**2 * self.q #Only use mean q for this evaluation
             
-        
+            lnlk  = -0.5 * np.dot(d, np.linalg.solve(B, d)) #Minus so its the negative log likelihood
             det   = np.linalg.slogdet(B); assert det[0] == 1, f"Determinant is non-positive definite. Sign {det[0]}."
-            lnlk  += det[1] #Add determinant
             
             #Move onto next best guess for MAP
             q  = np.linalg.solve(B, d)
@@ -202,41 +202,157 @@ class WZLikelihoodRunner(object):
     
     
     def process(self, nz_array):
+         
+        N      = nz_array.shape[0]
+        ncpu   = joblib.cpu_count()
+        Njobs  = np.max([ncpu, N//1_000_000])
+        Nsplit = int(np.ceil(N / ncpu))
         
-        N = nz_array.shape[1]
+        path   = os.environ['TMPDIR'] + '/nz_array_TMP.npy'
+        np.save(path, nz_array); del nz_array; gc.collect()
+            
+        def subfunc(i): 
+            Min = i*Nsplit
+            Max = (i+1)*Nsplit if i != Njobs - 1 else N
+            iterator = tqdm(range(Min, Max)) if i == 0 else range(Min, Max)
+            Nz  = np.load(path, mmap_mode = 'r')
+            return i, [self.get_loglike(Nz[j]) for j in iterator]
         
-        pass
+        
+        r = [0] * ncpu
+        with joblib.parallel_backend("loky"):
+            jobs    = [joblib.delayed(subfunc)(i) for i in range(Njobs)]
+            outputs = joblib.Parallel(n_jobs = -1, verbose = 10, max_nbytes = None)(jobs)
+            for o in outputs: r[o[0]] = o[1]
+            r       = np.concatenate(r)
+            
+        os.remove(path)
+        
+        return r
+    
     
     
 if __name__ == '__main__':
     
-    WZ_data = np.load('/project/chihway/dhayaa/DECADE/Wz/20240613_fiducial_Wz_urmask.npy', allow_pickle = True)[()]
+    my_parser = argparse.ArgumentParser()
 
-    z = np.linspace(0.11, 2.11, 41)
-    z = (z[1:] + z[:-1])/2
-    WZ   = WZ_data['w_ur'][0]
-    dWZ  = WZ_data['dw_ur'][0]
-    C_Wz = np.diag(dWZ**2)
-    b_r  = WZ_data['b_z'][0]
-
-    b_u  = 1
-    b_u_sigma = 0.5
-    alpha_u = 1 - 2
-    alpha_u_sigma = 1
+    #Metaparams
+    my_parser.add_argument('--NzDir',  help = 'Directory of all the nz runs')
+    my_parser.add_argument('--WzPath', help = 'Path to the Wz run we will use')
+    my_parser.add_argument('--njobs',  action = 'store', type = int, default = -1, help = 'Number of parallel threads')
     
-    var  = 0.15
-    M    = 5
+    my_parser.add_argument('--b_u',      type = float, default = 1.0, help = 'Bias of the unknown sample')
+    my_parser.add_argument('--db_u',     type = float, default = 1.5, help = 'Uncertainty on bias of the unknown sample')
+    my_parser.add_argument('--alpha_u',  type = float, default = 1.9, help = 'Magnification of the unknown sample')
+    my_parser.add_argument('--dalpha_u', type = float, default = 1.0, help = 'Uncertainty on magnification of the unknown sample')
+    
+    my_parser.add_argument('--M',     type = int, default = 5, help = 'Order of the sys functions')
+    my_parser.add_argument('--rms',   type = float, default = 0.15, help = 'Rms of the sys functions')
+    
+    my_parser.add_argument('--tol',   type = float, default = 0.05, help = 'Tolerance of the log likelihood linearization')
+    my_parser.add_argument('--Niter', type = int, default = 100, help = 'Total number of iterations before converging on best fit')
+    
+    my_parser.add_argument('--Name',  type = str, default = None, help = 'Name to save the run under')
+    
+    args = vars(my_parser.parse_args())
+    
+    #Print args for debugging state
+    print('-------INPUT PARAMS----------')
+    for p in args.keys():
+        print('%s : %s'%(p.upper(), args[p]))
+    print('-----------------------------')
+    print('-----------------------------')
+    
+    #Read out the WZ measurements
+    WZ_data = np.load(args['WzPath'], allow_pickle = True)[()]
 
+    # The params of the non-sys func marginalization
+    b_u           = args['b_u']
+    b_u_sigma     = args['db_u']
+    alpha_u       = args['alpha_u'] - 2
+    alpha_u_sigma = args['dalpha_u']
+    
+    # Now the sys function marginalization
+    var   = args['rms']**2
+    M     = args['M']
     s_mu  = np.zeros(M + 1)
-    s_sig = (2*np.arange(M + 1) +1) / 0.85**2
-    s_sig[0] *= np.log(b_u_sigma/b_u + 1)**2
-
-    TEST = WZLikelihoodRunner(Wz = WZ, z = zbinsc, zmsk = zmsk, C_Wz = C_Wz, 
-                              b_r = b_r, alpha_r = 0.1 * np.ones_like(b_r) - 2,
-                              s_mu  = np.zeros(M + 1), s_sig = s_sig, 
-                              b_u = b_u, b_u_sig = b_u_sigma,
-                              alpha_u = alpha_u, alpha_u_sig = alpha_u_sigma,
-                              R_min   = 1.5, R_max = 5, R_bins = 10,
-                              lnlk_tolerance = 0.05, Niter = 100)
+    s_sig = (2*np.arange(M + 1) + 1) / 0.85**2
+    s_sig[0]  *= np.log(b_u_sigma/b_u + 1)**2
+    s_sig[1:] *= var
     
-    RES = TEST.get_loglike(nz[3], verbose = True)
+    # Magnification coefficients (taking from section 3.3 of https://arxiv.org/pdf/2012.08569)
+    
+    z_RM = [0.25, 0.425, 0.575, 0.75, 0.9]
+    #a_RM = [0.313, -1.515, -0.6628, 1.251, 0.9685]
+    a_RM = [2.63, -1.04, 0.67, 4.50, 3.93]
+    
+    z_ML = [0.3, 0.475, 0.625, 0.775, 0.9, 1.0]
+    a_ML = [2.43, 2.30, 3.75, 3.94, 3.56, 4.96]
+    
+    alpha_r = interpolate.interp1d(z_RM, a_RM, kind = 'cubic', fill_value = (a_RM[0], a_RM[-1]), bounds_error = False)
+    
+    
+    #HARDCODED VALUES; MEASUREMENTS OF WZ
+    R_min  = 1.5
+    R_max  = 5.0
+    R_bins = 10
+    print(f"USING R_min = {R_min}, R_max = {R_max}, and R_bins = {R_bins}")
+    
+    #HARDCODED VALUES; MEASUREMENTS OF NZ
+    min_z   = 0.01
+    max_z   = 5
+    delta_z = 0.05
+    zbins   = np.arange(min_z,max_z+delta_z,delta_z)
+    zbinsc  = zbins[:-1]+(zbins[1]-zbins[0])/2.
+    zmsk    = np.zeros_like(zbinsc).astype(bool)
+    zmsk[2:42] = True #Which parts of n(z) have Wz measurements to them.
+    
+    
+    #Loop back to interpolate the z_bins and add the surface area factor (alpha = -2)
+    #Can only evaluate this for redshift where we have boss galaxy data
+    alpha_r = alpha_r(zbinsc[zmsk])
+    
+    print("ZBINS:", zbinsc[zmsk])
+    print("ALPHA:", alpha_r)
+    
+    files = sorted(glob.glob(args['NzDir'] + '/nz_Samp*npy'))[:]
+    nz    = np.concatenate([np.load(f) for f in files], axis = 0)
+    res = []
+    for i in range(4):
+        
+        WZ     = WZ_data['w_ur'][i]
+        C_Wz   = WZ_data['Cw_ur'][i]
+        b_r    = WZ_data['b_z'][i]
+        
+        #Hardcoded hartlap factor, for now....
+        Njk   = 600
+        Ndata = C_Wz.shape[0]
+        hartlap  = (Njk - Ndata)/(Njk -1)
+        dodelson = 1 / (1 + (Ndata - 3) * (Njk - Ndata - 2) / (Njk - Ndata - 1) / (Njk - Ndata - 4) )
+
+        print(f"APPLYING HARTLAP {hartlap}, AND DODELSON {dodelson} TO BIN {i}. COMBINED {hartlap * dodelson}")
+        
+        C_Wz   = C_Wz / (hartlap * dodelson)
+
+        #The Runner
+        Runner = WZLikelihoodRunner(Wz  = WZ, z = zbinsc, zmsk = zmsk, C_Wz = C_Wz, 
+                                    b_r = b_r, alpha_r = alpha_r,
+                                    s_mu  = s_mu, s_sig = s_sig, 
+                                    b_u = b_u, b_u_sig = b_u_sigma,
+                                    alpha_u = alpha_u, alpha_u_sig = alpha_u_sigma,
+                                    R_min   = R_min, R_max = R_max, R_bins = R_bins,
+                                    lnlk_tolerance = args['tol'], Niter = args['Niter'])
+    
+        res.append(Runner.process(nz[:, i]))
+        
+    print("STARTING CONCAT")
+    res = np.array(res)
+    res = np.swapaxes(res, 0, 1)
+    
+    print("STARTING WRITE")
+    Name = '' if args['Name'] is None else '_%s' % args['Name']
+    np.save(args['NzDir'] + '/LnLikelihood%s.npy' % Name, res)
+    
+    print("FINISHED PROCESSING")
+
+    
