@@ -1180,7 +1180,7 @@ if __name__ == '__main__':
 
                 mean_z = np.trapz(NZ * zbinsc[None, None, :], zbinsc, axis = -1)/np.trapz(NZ, zbinsc, axis = -1)
                 summ   = np.stack([np.mean(mean_z, axis = 0), np.std(mean_z, axis = 0)])
-                np.savetxt(path + '/nz_priors_%s.npy' % Mode, summ)
+                np.savetxt(path + '/nz_priors_%s.txt' % Mode, summ)
                 
                 Likelihood_file = my_params['output_dir'] + '/%s/LnLikelihood_Fiducial.npy' % Mode
                 if os.path.isfile(Likelihood_file):
@@ -1197,7 +1197,7 @@ if __name__ == '__main__':
                     mean_z = np.trapz(NZ * zbinsc[None, None, :], zbinsc, axis = -1)/np.trapz(NZ, zbinsc, axis = -1)
                     summ   = np.stack([[np.mean(mean_z[good[:, i], i], axis = 0) for i in range(4)], 
                                        [np.std(mean_z[good[:, i], i], axis = 0) for i in range(4)]])
-                    np.savetxt(path + '/nz_priors_combined_%s.npy' % Mode, summ)
+                    np.savetxt(path + '/nz_priors_combined_%s.txt' % Mode, summ)
                     
                 print("FINISHED", Mode, "\n")
                 print('-----------------------')
