@@ -73,11 +73,12 @@ if __name__ == "__main__":
 
     
     #Cosmos also loaded separately
-    cosmos = fitsio.read(cosmosfile, columns = ['FLAG_COMBINED', 'lp_type', 'lp_mask', 'ID', 'lp_zPDF', 'alpha_j2000', 'delta_j2000'])
+    cosmos = fitsio.read(cosmosfile, columns = ['FLAG_COMBINED', 'lp_type', 'lp_mask', 'ID', 'ez_z_phot',  'lp_zPDF', 'alpha_j2000', 'delta_j2000'])
     cosmos = cosmos[cosmos['FLAG_COMBINED'] == 0]
-    cosmos = cosmos[cosmos['lp_type'] == 0]
-    cosmos = cosmos[cosmos['lp_mask'] == 0]
+    #cosmos = cosmos[cosmos['lp_type'] == 0]
+    #cosmos = cosmos[cosmos['lp_mask'] == 0]
     cosmos = pd.DataFrame(cosmos); print("FINISHED LOADING COSMOS")
+    cosmos['ez_z_phot'] = cosmos['ez_z_phot'].values.byteswap().newbyteorder()
     
     #Finally load PAUS+COSMOS separately
     paus = pd.read_csv(paufile, compression = 'bz2', comment = '#', sep=",", na_values=r'\N'); print("FINISHED LOADING PAUS")
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     #Now do all the matches
     #################################################
     
-    deep = match_zcat_to_deepcat(cosmos, "lp_zPDF", "ALPHA_J2000", "DELTA_J2000", "COSMOS2020", deep); print("FINISHED MATCHING COSMOS")
+    deep = match_zcat_to_deepcat(cosmos, "ez_z_phot", "ALPHA_J2000", "DELTA_J2000", "COSMOS2020", deep); print("FINISHED MATCHING COSMOS")
     deep = match_zcat_to_deepcat(paus, "photoz", "ra", "dec", "PAUS+COSMOS", deep); print("FINISHED MATCHING PAUS")
     for survey in ['VVDS', 'VIPERS', 'ZCOSMOS']:
         deep = match_zcat_to_deepcat(spec[spec['SOURCE'] == survey], "Z", "RA", "DEC", survey, deep); print("FINISHED MATCHING %s" % survey)
