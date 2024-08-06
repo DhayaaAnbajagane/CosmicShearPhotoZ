@@ -1,7 +1,7 @@
 import sys
 import numpy as np
 import pandas as pd
-import time, os, pickle, joblib
+import time, os, glob, pickle, joblib
 import argparse
 import h5py
 from tqdm import tqdm
@@ -999,6 +999,7 @@ if __name__ == '__main__':
     my_parser.add_argument('--ThreeSDirRedbiasRunner', action = 'store_true', default = False, help = 'Run 3sDir module with z-bias')
     my_parser.add_argument('--FinalRunner',     action = 'store_true', default = False, help = 'Run 3sDir module with all uncertainties')
     
+    my_parser.add_argument('--Summarize',  action = 'store_true', default = False, help = 'Compress samples')
     
     my_parser.add_argument('--Nsamples', action = 'store', type = int, default = 5,       help = 'Number of ZP samples to make')
     my_parser.add_argument('--njobs',    action = 'store', type = int, default = 15,      help = 'Number of parallel threads')
@@ -1153,5 +1154,58 @@ if __name__ == '__main__':
                 np.save(my_params['output_dir'] + '/ZB/nz_Samp%d.npy' % i, n_of_z)
         
         
+    if args['Summarize']:
+        
+        from scipy import stats
+        
+        print("SUMMARY USES 5SIGMA AS THRESHOLD WITH 8 DEGREES OF FREEDOM. "
+              "CHANGE SRC CODE IF YOU DON'T WANT THIS")
+        
+        path = my_params['output_dir'] + '/Summary'
+        os.makedirs(path, exist_ok = True)
+        
+        for Mode in ['ZP', 'ZB', 'Final']:
+            
+            print('-----------------------')
+            print("IN MODE", Mode)
+            
+            if os.path.isdir(my_params['output_dir'] + '/%s/' % Mode):
 
+                print("FOUND FILES! LOADING THEM NOW...")
+                files = sorted(glob.glob(my_params['output_dir'] + '/%s/nz_*.npy' % Mode))
+                NZ    = np.concatenate([np.load(f) for f in files])
+                print(f"USING {len(files)} FILES. TOTAL OF {NZ.shape[0]} SAMPLES")
+
+                np.save(path + '/mean_nz_%s.npy' % Mode, np.mean(NZ, axis = 0))
+
+                mean_z = np.trapz(NZ * zbinsc[None, None, :], zbinsc, axis = -1)/np.trapz(NZ, zbinsc, axis = -1)
+                summ   = np.stack([np.mean(mean_z, axis = 0), np.std(mean_z, axis = 0)])
+                np.savetxt(path + '/nz_priors_%s.npy' % Mode, summ)
+                
+                Likelihood_file = my_params['output_dir'] + '/%s/LnLikelihood_Fiducial.npy' % Mode
+                if os.path.isfile(Likelihood_file):
+                    
+                    print("FOUND CALCULATED LIKELIHOOD! LOADING IT NOW...")
+                    Likelihood = np.load(Likelihood_file)
+                    max_like   = np.min(Likelihood[..., 0], axis = 0)
+                    good       = np.abs(Likelihood[..., 0] - max_like) < stats.chi2.ppf(stats.norm.cdf(5), 8)/2
+                    
+                    print(f"SELECT {np.sum(good, axis = 0)} SAMPLES PER BIN [1 2 3 4]")
+                    mean = np.array([np.mean(NZ[good[:, i], i, :], axis = 0) for i in range(4)])
+                    np.save(path + '/mean_nz_combined_%s.npy' % Mode, mean)
+
+                    mean_z = np.trapz(NZ * zbinsc[None, None, :], zbinsc, axis = -1)/np.trapz(NZ, zbinsc, axis = -1)
+                    summ   = np.stack([[np.mean(mean_z[good[:, i], i], axis = 0) for i in range(4)], 
+                                       [np.std(mean_z[good[:, i], i], axis = 0) for i in range(4)]])
+                    np.savetxt(path + '/nz_priors_combined_%s.npy' % Mode, summ)
+                    
+                print("FINISHED", Mode, "\n")
+                print('-----------------------')
+                    
+                    
+            
+            
+            
+            
+            
     
