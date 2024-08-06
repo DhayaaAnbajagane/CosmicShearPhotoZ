@@ -61,7 +61,7 @@ class WZRunner:
         
         z_bin = np.linspace(0, 2, 400)
         dNdz  = np.where( (z_bin > z_min) & (z_bin < z_max), 1, 0) #This will be normalized later with ccl
-        ell   = np.arange(1., 10_000.).astype(int)
+        ell   = np.arange(1, 10_000).astype(int)
         gal_tracer = ccl.tracers.NumberCountsTracer(cosmo, dndz = (z_bin, dNdz), 
                                                     bias = (z_bin, np.ones_like(z_bin)), mag_bias = None, has_rsd = False,)
         Cells      = ccl.cls.angular_cl(cosmo, gal_tracer, gal_tracer, ell)
