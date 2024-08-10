@@ -195,10 +195,9 @@ class WZLikelihoodRunner(object):
         wtheory = wtheory  + A[:, self.order + 1] * q[self.order + 1] #Unknown mag
         
         res     = self.Wz - wtheory
-        chisq   = np.dot(res, np.linalg.solve(self.C_Wz, res)) * 0.5
+        chisq   = np.dot(res, np.linalg.solve(self.C_Wz, res))
             
-        return lnlk, chisq
-    
+        return np.hstack([lnlk, chisq, q, wtheory])
     
     
     def process(self, nz_array):
@@ -224,7 +223,7 @@ class WZLikelihoodRunner(object):
             jobs    = [joblib.delayed(subfunc)(i) for i in range(Njobs)]
             outputs = joblib.Parallel(n_jobs = -1, verbose = 10, max_nbytes = None)(jobs)
             for o in outputs: r[o[0]] = o[1]
-            r       = np.concatenate(r)
+            r       = np.concatenate(r, axis = 0)
             
         os.remove(path)
         
@@ -276,9 +275,9 @@ if __name__ == '__main__':
     var   = args['rms']**2
     M     = args['M']
     s_mu  = np.zeros(M + 1)
-    s_sig = (2*np.arange(M + 1) + 1) / 0.85**2
-    s_sig[0]  *= np.log(b_u_sigma/b_u + 1)**2
-    s_sig[1:] *= var
+    s_var = np.ones(M + 1)
+    s_var[0]  *= np.log(b_u_sigma/b_u + 1)**2
+    s_var[1:] *= var
     
     # Magnification coefficients (taking from section 3.3 of https://arxiv.org/pdf/2012.08569)
     
@@ -337,7 +336,7 @@ if __name__ == '__main__':
         #The Runner
         Runner = WZLikelihoodRunner(Wz  = WZ, z = zbinsc, zmsk = zmsk, C_Wz = C_Wz, 
                                     b_r = b_r, alpha_r = alpha_r,
-                                    s_mu  = s_mu, s_sig = s_sig, 
+                                    s_mu  = s_mu, s_sig = np.sqrt(s_var), 
                                     b_u = b_u, b_u_sig = b_u_sigma,
                                     alpha_u = alpha_u, alpha_u_sig = alpha_u_sigma,
                                     R_min   = R_min, R_max = R_max, R_bins = R_bins,
