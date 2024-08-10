@@ -304,7 +304,7 @@ if __name__ == '__main__':
     zbins   = np.arange(min_z,max_z+delta_z,delta_z)
     zbinsc  = zbins[:-1]+(zbins[1]-zbins[0])/2.
     zmsk    = np.zeros_like(zbinsc).astype(bool)
-    zmsk[2:42] = True #Which parts of n(z) have Wz measurements to them.
+    zmsk[2:26] = True #Which parts of n(z) have Wz measurements to them.
     
     
     #Loop back to interpolate the z_bins and add the surface area factor (alpha = -2)
@@ -319,9 +319,9 @@ if __name__ == '__main__':
     res = []
     for i in range(4):
         
-        WZ     = WZ_data['w_ur'][i]
-        C_Wz   = WZ_data['Cw_ur'][i]
-        b_r    = WZ_data['b_z'][i]
+        WZ     = WZ_data['w_ur'][i][:24]
+        C_Wz   = WZ_data['Cw_ur'][i][:24].T[:24]
+        b_r    = WZ_data['b_z'][i][:24]
         
         #Hardcoded hartlap factor, for now....
         Njk   = 600
