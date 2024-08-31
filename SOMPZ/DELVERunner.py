@@ -447,13 +447,21 @@ class BinRunner(ClassifyRunner):
     @timeit
     def get_shear_weights(self, S2N, T_over_Tpsf):
         
-        weight_path = os.path.dirname(__file__) + '/../weights_20240209.npy'
-        X = np.load(weight_path, allow_pickle = True)[()]
+        path = os.path.dirname(__file__) + '/../grid_quantities_20240827.npy'
+        res  = np.load(path)
+        S    = res['SNR']
+        T    = res['T_ratio']
+        R    = (res['R11'] + res['R22'])/2 #Average over both components. No selection response, as in Y3
+        w    = res['weight']
+
+        # #The old version, using weights that had R_gamma and R_s of the grid.
+        # weight_path = os.path.dirname(__file__) + '/../weights_20240209.npy'
+        # X = np.load(weight_path, allow_pickle = True)[()]
         
-        S = X['s2n'].flatten()
-        T = X['T_over_Tpsf'].flatten()
-        R = X['R'].flatten()
-        w = X['w'].flatten()
+        # S = X['s2n'].flatten()
+        # T = X['T_over_Tpsf'].flatten()
+        # R = X['R'].flatten()
+        # w = X['w'].flatten()
         
         #Have checked that this what DESY3 uses.
         interp        = interpolate.NearestNDInterpolator((S, T), R * w,)

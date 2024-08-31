@@ -422,7 +422,7 @@ if __name__ == '__main__':
 
             ra      = f['RA'][:]
             dec     = f['DEC'][:]
-            w       = f['mcal_g_w'][:]
+            w       = f['mcal_g_w_noshear'][:]
 
             Tomobin = f['baseline_mcal_mask_noshear'][:]
 

@@ -1016,7 +1016,7 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240408/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240831/', 
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
                 }
