@@ -1,1 +1,1 @@
-from . import SOMPZ, WZ
+from . import SOMPZ, WZ, Likelihood
