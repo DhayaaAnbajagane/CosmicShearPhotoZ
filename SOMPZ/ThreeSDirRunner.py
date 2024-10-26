@@ -150,7 +150,7 @@ class ThreeSDirRunner(BinRunner):
         
         ### Load dictionary containing which wide cells belong to which tomographic bin
         bins = self.make_bins(balrog_classified_df, wide_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
-        tomo_bins_wide_modal_even = np.array([np.where(bins == i)[0] for i in range(4)])
+        tomo_bins_wide_modal_even = [np.where(bins == i)[0] for i in range(4)]
 
         
         ### Load p(chat) with all weights included: Balrog, response, shear.
@@ -1044,9 +1044,18 @@ if __name__ == '__main__':
         
         
         ONE = ThreeSDirRunner(**tmp)
-        ONE.go()
+        #ONE.go()
 
-        
+        os.makedirs(my_params['output_dir'] + '/SVSN/', exist_ok = True)
+
+        for i in range(args['Nsamples']):
+            n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
+            n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
+            
+            np.save(my_params['output_dir'] + '/SVSN/nz_Samp%d.npy' % i, n_of_z)
+
+                         
+
     if args['ZPOffsetRunner']:
         tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path', 'redshift_catalog_path', 'tomo_redshift_catalog_path']}
         ONE = ZPOffsetRunner(**tmp)
