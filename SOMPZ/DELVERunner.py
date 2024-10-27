@@ -789,8 +789,8 @@ class BinRunner(ClassifyRunner):
             nz /= np.sum(nz)
             
             #Now do pileup of everything beyond z > 3.
-            nz[np.argmin(np.abs(z - 3))] = np.sum(nz[z > 3])
-            nz[z > 3] = 0
+            nz[np.argmin(np.abs(z - 3))] += np.sum(nz[z > 3])
+            nz[z > 3] *= 0.0
             
             #save
             processed_nz.append(nz)
