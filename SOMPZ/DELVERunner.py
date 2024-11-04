@@ -789,8 +789,8 @@ class BinRunner(ClassifyRunner):
             nz /= np.sum(nz)
             
             #Now do pileup of everything beyond z > 3.
-            nz[np.argmin(np.abs(z - 3))] += np.sum(nz[z > 3])
-            nz[z > 3] *= 0.0
+            #nz[np.argmin(np.abs(z - 3))] += np.sum(nz[z > 3])
+            #nz[z > 3] *= 0.0
             
             #save
             processed_nz.append(nz)
@@ -830,7 +830,7 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240408/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241104/', 
                  }
     
     my_params = my_params | my_files

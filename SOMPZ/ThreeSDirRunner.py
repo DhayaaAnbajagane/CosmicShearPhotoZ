@@ -845,7 +845,8 @@ class ThreeSDirRunner(BinRunner):
             nz /= np.sum(nz, axis = -1)[..., None]
             
             #Now do pileup of everything beyond z > 3.
-            nz[:, np.argmin(np.abs(z - 3))] = np.sum(nz[:, z > 3])
+            #nz[:, np.argmin(np.abs(z - 3))] += np.sum(nz[:, z > 3])
+            #nz[:, z > 3] *= 0.0
             
             #save
             processed_nz.append(nz)
@@ -1016,7 +1017,7 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20240831/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241104/', 
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
                 }
@@ -1191,7 +1192,7 @@ if __name__ == '__main__':
                 summ   = np.stack([np.mean(mean_z, axis = 0), np.std(mean_z, axis = 0)])
                 np.savetxt(path + '/nz_priors_%s.txt' % Mode, summ)
                 
-                Likelihood_file = my_params['output_dir'] + '/%s/LnLikelihood_Fiducial.npy' % Mode
+                Likelihood_file = my_params['output_dir'] + '/%s/LnLikelihood_Fiducial_all.npy' % Mode
                 if os.path.isfile(Likelihood_file):
                     
                     print("FOUND CALCULATED LIKELIHOOD! LOADING IT NOW...")
