@@ -17,7 +17,7 @@ from .SOM import Classifier
 from .Files import my_files
 from .DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
 
-NSAMPLES_DEFAULT = 1e3
+NSAMPLES_DEFAULT = 1e2
 class ThreeSDirRunner(BinRunner):
     
     def __init__(self, Nsamples = NSAMPLES_DEFAULT, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
@@ -33,6 +33,28 @@ class ThreeSDirRunner(BinRunner):
         self.rng = np.random.default_rng(seed = self.seed)
         
         self.rng_list = [np.random.default_rng(seed = self.rng.integers(2**60)) for i in range(os.cpu_count())]
+    
+    @timeit
+    def get_wide_catalog(self, wide_classified_df):
+
+        path = self.wide_catalog_path
+        
+        #We check balrog_contam even in data, but the result is always TRUE if its data
+        Mask = self.get_wl_sample_mask(path, label = 'noshear') & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
+        with h5py.File(path, 'r') as f:
+
+            Wide_df = pd.DataFrame()
+            Wide_df['id'] = f['id'][:][Mask]
+            Wide_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:][Mask], f['mcal_T_ratio_noshear'][:][Mask])
+            
+            Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']],
+                               how = 'left', on = 'id', suffixes = (None, '_classified'), 
+                               validate = "1:1")
+            
+            Wide_df['cell_wide_unsheared'] = Wide_df['cell'] #Rename so it works with Alex's code
+            
+        return Wide_df
+
     
     @timeit
     def get_balrog_catalog(self, balrog_classified_df):
@@ -151,11 +173,12 @@ class ThreeSDirRunner(BinRunner):
         ### Load dictionary containing which wide cells belong to which tomographic bin
         bins = self.make_bins(balrog_classified_df, wide_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
         tomo_bins_wide_modal_even = [np.where(bins == i)[0] for i in range(4)]
-
+        
+        wide_data = self.get_wide_catalog(wide_classified_df)
         
         ### Load p(chat) with all weights included: Balrog, response, shear.
-        chat  = balrog_data['cell_wide_unsheared'].values.astype(int)
-        w     = balrog_data['overlap_weight'].values
+        chat  = wide_data['cell_wide_unsheared'].values.astype(int)
+        w     = wide_data['w'].values
         pchat = np.bincount(chat, weights = w, minlength = np.max(chat) + 1)/np.sum(w)
         
         WideSOMSize = 32
@@ -195,7 +218,7 @@ class ThreeSDirRunner(BinRunner):
 
         ### Counts in the deep sample (weighted by balrog, but not weighted by responseXlensing weights.)
         ### Including condition on tomographic bin.
-        Nc = self.return_Nc(balrog_data)
+        Nc   = self.return_Nc(balrog_data)
         Nc_0 = self.return_Nc(balrog_data[balrog_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[0])])
         Nc_1 = self.return_Nc(balrog_data[balrog_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[1])])
         Nc_2 = self.return_Nc(balrog_data[balrog_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[2])])
@@ -461,7 +484,7 @@ class ThreeSDirRunner(BinRunner):
         self.lambda_mean = lambda_mean
         self.lambda_mean_R = lambda_mean_R
         self.lambda_T = lambda_T
-        self.onecell = onecell
+        self.onecell  = onecell
         self.N_cz_Rsample_onecell = N_cz_Rsample_onecell
 
         Nproc = os.cpu_count()
@@ -1017,7 +1040,7 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241104/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241113/', 
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
                 }
@@ -1044,12 +1067,13 @@ if __name__ == '__main__':
                                 'cell'     : np.load(my_params['output_dir'] + '/collated_deep_classifier.npy')})
         
         
-        ONE = ThreeSDirRunner(**tmp)
-        #ONE.go()
-
         os.makedirs(my_params['output_dir'] + '/SVSN/', exist_ok = True)
 
+        seeds = np.random.default_rng(seed = my_params['seed']).integers(0, 2**32, args['Nsamples'])
         for i in range(args['Nsamples']):
+
+            tmp['seed'] = seeds[i]
+            ONE    = ThreeSDirRunner(**tmp)
             n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
             n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
             
@@ -1066,7 +1090,6 @@ if __name__ == '__main__':
     if args['ZPUncertRunner']:
         
         tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
-        ONE = ThreeSDirRunner(**tmp)
         
         bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
                                 'true_ra'  : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_RA.npy'),
@@ -1076,11 +1099,15 @@ if __name__ == '__main__':
         wclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/WIDE_DATA_ID.npy'),
                                 'cell'     : np.load(my_params['output_dir'] + '/collated_wide_classifier.npy')})
         
+        seeds = np.random.default_rng(seed = my_params['seed']).integers(0, 2**32, args['Nsamples'])
         for i in range(args['Nsamples']):
+            
             dclass  = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
                                     'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
             
         
+            tmp['seed'] = seeds[i]
+            ONE    = ThreeSDirRunner(**tmp)
             n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
             n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
                 
@@ -1109,8 +1136,9 @@ if __name__ == '__main__':
         
         for i in range(args['Nsamples']):
             
-            tmp = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
-            
+            tmp   = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
+            seeds = np.random.default_rng(seed = my_params['seed']).integers(0, 2**32, args['Nsamples'])
+
             def bias_function(data):
                 
                 SRC = data['SOURCE'].values
@@ -1141,6 +1169,7 @@ if __name__ == '__main__':
                 return data
             
             tmp['bias_function'] = bias_function #Supply function as argument to class initialization dict
+            tmp['seed'] = seeds[i]
             ONE = ThreeSDirRedbiasRunner(**tmp) #Initialize class
             
             if args['FinalRunner']:
@@ -1174,7 +1203,7 @@ if __name__ == '__main__':
         path = my_params['output_dir'] + '/Summary'
         os.makedirs(path, exist_ok = True)
         
-        for Mode in ['ZP', 'ZB', 'Final']:
+        for Mode in ['SVSN', 'ZP', 'ZB', 'Final']:
             
             print('-----------------------')
             print("IN MODE", Mode)
