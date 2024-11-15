@@ -16,8 +16,10 @@ from multiprocessing import Pool
 from .SOM import Classifier
 from .Files import my_files
 from .DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
+from .RedshiftSampleRunner import generate_catalog_and_bias
 
 NSAMPLES_DEFAULT = 1e2
+
 class ThreeSDirRunner(BinRunner):
     
     def __init__(self, Nsamples = NSAMPLES_DEFAULT, z_bin_edges = [0.0, 0.3639, 0.6143, 0.8558, 2.0], **kwargs):
@@ -38,20 +40,29 @@ class ThreeSDirRunner(BinRunner):
     def get_wide_catalog(self, wide_classified_df):
 
         path = self.wide_catalog_path
-        
-        #We check balrog_contam even in data, but the result is always TRUE if its data
-        Mask = self.get_wl_sample_mask(path, label = 'noshear') & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
-        with h5py.File(path, 'r') as f:
+        tmp  = f"{os.environ['TMPDIR']}/wide_weights.npy"
+        Wide_df = pd.DataFrame()
 
-            Wide_df = pd.DataFrame()
-            Wide_df['id'] = f['id'][:][Mask]
-            Wide_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:][Mask], f['mcal_T_ratio_noshear'][:][Mask])
-            
-            Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']],
-                               how = 'left', on = 'id', suffixes = (None, '_classified'), 
-                               validate = "1:1")
-            
-            Wide_df['cell_wide_unsheared'] = Wide_df['cell'] #Rename so it works with Alex's code
+        if os.path.isfile(tmp):
+            Wide_df['w']  = np.load(tmp)
+            Wide_df['id'] = wide_classified_df['id']
+            Wide_df['cell_wide_unsheared'] = wide_classified_df['cell']
+
+        else:
+            #We check balrog_contam even in data, but the result is always TRUE if its data
+            Mask = self.get_wl_sample_mask(path, label = 'noshear') & self.get_foreground_mask(path) & self.get_balrog_contam_mask(path)
+            with h5py.File(path, 'r') as f:
+
+                Wide_df['id'] = f['id'][:][Mask]
+                Wide_df['w']  = self.get_shear_weights(f['mcal_s2n_noshear'][:][Mask], f['mcal_T_ratio_noshear'][:][Mask])
+                
+                Wide_df = pd.merge(Wide_df, wide_classified_df[['cell', 'id']],
+                                how = 'left', on = 'id', suffixes = (None, '_classified'), 
+                                validate = "1:1")
+                
+                Wide_df['cell_wide_unsheared'] = Wide_df['cell'] #Rename so it works with Alex's code
+
+            np.save(tmp, Wide_df['w'].values)
             
         return Wide_df
 
@@ -171,7 +182,13 @@ class ThreeSDirRunner(BinRunner):
         spec_data['weight_response_shear'] = spec_data['injection_counts']*spec_data['overlap_weight']
         
         ### Load dictionary containing which wide cells belong to which tomographic bin
-        bins = self.make_bins(balrog_classified_df, wide_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
+        bpath = f"{os.environ['TMPDIR']}/Mybins.npy"
+        if not os.path.isfile(bpath):
+            bins = self.make_bins(balrog_classified_df, wide_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
+            np.save(bpath, bins)
+        else:
+            bins = np.load(bpath)
+
         tomo_bins_wide_modal_even = [np.where(bins == i)[0] for i in range(4)]
         
         wide_data = self.get_wide_catalog(wide_classified_df)
@@ -243,7 +260,7 @@ class ThreeSDirRunner(BinRunner):
         ### Average responseXlensing in each deep cell and redshift bin. The responseXlensing of each galaxy is weighted by its balrog probability.
         ### Including condition on tomographic bin.
 
-        Rzc = self.return_Rzc(spec_data)
+        Rzc   = self.return_Rzc(spec_data)
         Rzc_0 = self.return_Rzc(spec_data[spec_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[0])])
         Rzc_1 = self.return_Rzc(spec_data[spec_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[1])])
         Rzc_2 = self.return_Rzc(spec_data[spec_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[2])])
@@ -252,7 +269,7 @@ class ThreeSDirRunner(BinRunner):
 
         ### Average responseXlensing in each deep cell in the REDSHIFT sample. The responseXlensing of each galaxy is weighted by its balrog probability.
         ### Including condition on tomographic bin.
-        Rc_redshift = self.return_Rc(spec_data)
+        Rc_redshift   = self.return_Rc(spec_data)
         Rc_0_redshift = self.return_Rc(spec_data[spec_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[0])])
         Rc_1_redshift = self.return_Rc(spec_data[spec_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[1])])
         Rc_2_redshift = self.return_Rc(spec_data[spec_data.cell_wide_unsheared.isin(tomo_bins_wide_modal_even[2])])
@@ -795,7 +812,9 @@ class ThreeSDirRunner(BinRunner):
 
         ### step3
         f_cz = self.draw_3sdir_onlyR(rng)
-        f_z_c = f_cz/np.sum(f_cz,axis=1)[:,None]
+        #Suppress error because in next step we set infinite terms to 0
+        with np.errstate(divide = 'ignore', invalid = 'ignore'):
+            f_z_c = f_cz/np.sum(f_cz,axis=1)[:,None]
         f_z_c[self.onecell] = self.N_cz_Rsample_onecell
 
         ### compute f_{zc}
@@ -896,9 +915,9 @@ class ZPOffsetRunner(TrainRunner):
         
         assert len(self.sigma_ZP) == 8, "Current code assumes DESY3, which has 8 bands in deep fields"
         
-        sampler = stats.qmc.LatinHypercube(d = len(self.sigma_ZP) * 3, seed = self.seed) #Times x3 is because we need 3 different fields
+        sampler = stats.qmc.LatinHypercube(d = len(self.sigma_ZP) * 4, seed = self.seed) #Times x3 is because we need 3 different fields
         samples = sampler.random(n = self.Nsamples)
-        samples = stats.norm(scale = np.tile(self.sigma_ZP, 3) ).ppf(samples)
+        samples = stats.norm(scale = np.tile(self.sigma_ZP, 4) ).ppf(samples)
         
         return samples
         
@@ -932,7 +951,7 @@ class ZPOffsetRunner(TrainRunner):
         tile_tag = np.zeros(DEEP[-1].shape[0], dtype = int) - 99
         for i in range(DEEP[-1].size):
             
-            if DEEP[-1][i][:-4] == 'COSMOS': tile_tag[i] = 0
+            if DEEP[-1][i][:-4] == 'COSMOS':  tile_tag[i] = 0
             elif DEEP[-1][i][:-4] == 'SN-C3': tile_tag[i] = 1
             elif DEEP[-1][i][:-4] == 'SN-E2': tile_tag[i] = 2
             elif DEEP[-1][i][:-4] == 'SN-X3': tile_tag[i] = 3
@@ -942,13 +961,13 @@ class ZPOffsetRunner(TrainRunner):
     
     def offset_photometry(self, ind, flux, flux_err, tiletag):
         
-        offsets = self.samples[ind].reshape(3, 8)
+        offsets = self.samples[ind].reshape(4, 8)
         
-        #Only offset the SN field photometry. The COSMOS field is fixed in place.
-        #This is because we are only concerned with the relative differences between
-        #the four fields. So one of them can have fixed photometry
-        flux     *= np.where(tiletag[:, None] > 0, 10**( -0.4*offsets[tiletag - 1, :] ), 1)
-        flux_err *= np.where(tiletag[:, None] > 0, 10**( -0.4*offsets[tiletag - 1, :] ), 1)
+        #Only offset the SN field photometry. The COSMOS field is also varied here for
+        #simplicity. You could in-practice fix COSMOS and account for its uncertainty
+        #in the other parameters.
+        flux     *= np.power(10, offsets[tiletag, :])
+        flux_err *= np.power(10, offsets[tiletag, :])
         
         return flux, flux_err
     
@@ -1117,9 +1136,6 @@ if __name__ == '__main__':
             
     if args['ThreeSDirRedbiasRunner'] | args['FinalRunner']:
         
-        
-        
-        
         bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
                                 'true_ra'  : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_RA.npy'),
                                 'true_dec' : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_DEC.npy'),
@@ -1133,35 +1149,65 @@ if __name__ == '__main__':
         elif args['ThreeSDirRedbiasRunner']:
             os.makedirs(my_params['output_dir'] + '/ZB/', exist_ok = True)
             
-        
+        rng   = np.random.default_rng(seed = my_params['seed'])
+        seeds = rng.integers(0, 2**32, args['Nsamples'])
+        modes = np.tile(np.arange(4), int(np.ceil(args['Nsamples']/4)))
+        rng.shuffle(modes)
+
+        print("NMODES", modes, flush = True)
+
         for i in range(args['Nsamples']):
             
+            mode_file = f"{os.environ['TMPDIR']}/redshift_file_mode{modes[i]}.csv"
+            if not os.path.file(mode_file):
+                cat, i_bcen, cosmos_bias, paus_cosmos_bias = generate_catalog_and_bias(mode = modes[i], deepcat_path = my_params['deep_catalog_path'])
+                print(cat, flush = True)
+                cat.to_csv(mode_file)
+                np.save(f"{os.environ['TMPDIR']}/cosmos_bias_mode{modes[i]}.npy",   cosmos_bias)
+                np.save(f"{os.environ['TMPDIR']}/paus_cosmos_bias.npy",             paus_cosmos_bias)
+                np.save(f"{os.environ['TMPDIR']}/i_bcen.npy", i_bcen)
+
+                print(f"FINISHED WRITING MODDED REDSHIFT SAMPLE FOR MODE {i}", flush = True)
+            
+            
+            else:
+                print("FILE ALREADY EXISTS. LOADING....")
+                cosmos_bias      = np.load(f"{os.environ['TMPDIR']}/cosmos_bias_mode{modes[i]}.npy")
+                paus_cosmos_bias = np.load(f"{os.environ['TMPDIR']}/paus_cosmos_bias.npy")
+                i_bcen           = np.load(f"{os.environ['TMPDIR']}/i_bcen.npy")
+                cat              = pd.read_csv(mode_file)
+            
+
             tmp   = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
-            seeds = np.random.default_rng(seed = my_params['seed']).integers(0, 2**32, args['Nsamples'])
+            tmp['redshift_catalog_path'] = f"{os.environ['TMPDIR']}/redshift_file.csv"
 
             def bias_function(data):
                 
+                print(f"I AM IN ITERATION {i} OF REDSHIFT BIAS FUNCTION", flush = True)
                 SRC = data['SOURCE'].values
                 Z   = data['Z'].values
                 with np.errstate(divide = 'ignore', invalid = 'ignore'):
                     Mi  = 30 - 2.5*np.log10(data['BDF_FLUX_DERED_CALIB_I'].values)
                 
                 seed  = np.random.default_rng(my_params['seed']).integers(0, 2**30, args['Nsamples'])[i]
-                sigma = np.random.default_rng(seed).normal(loc = 0, scale = 1, size = 2)
+                sigma = np.random.default_rng(seed).normal(loc = 1, scale = 1, size = 2) #Centered on 1 with width 1
+                inds  = np.random.default_rng(seed).integers(0, len(cosmos_bias), size = 2)
                 
                 #Do Cosmos-only fist
-                bfile = np.loadtxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_Cosmos.txt')
-                bfile = np.stack([bfile[:, 0], np.median(bfile[:, 1:], axis = 1)], axis = 1)
+                bfile = np.stack([i_bcen, cosmos_bias[inds[0]]], axis = 1)
                 bfile = bfile[np.isfinite(bfile[:, 1])]
-                bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0];
+                bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0]
                 Z     = np.where( (SRC == 'COSMOS2020')  & (Mi > Mmin) & (Mi < Mmax), Z + (1 + Z) * bias(Mi) * sigma[0], Z)
                 
+                print(f"COSMOS USING MIN {Mmin} AND MAX {Mmax}", flush = True)
+
                 #Do Cosmos + PAUS next
-                bfile = np.loadtxt('/project/chihway/dhayaa/DECADE/Redshift_files/median_bias_PausCosmos.txt')
-                bfile = np.stack([bfile[:, 0], np.median(bfile[:, 1:], axis = 1)], axis = 1)
+                np.stack([i_bcen, paus_cosmos_bias[inds[0]]], axis = 1)
                 bfile = bfile[np.isfinite(bfile[:, 1])]
-                bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0];
+                bias  = interpolate.CubicSpline(bfile[:, 0], bfile[:, 1], extrapolate = False); Mmin = bfile[0, 0]; Mmax = bfile[-1, 0]
                 Z     = np.where( (SRC == 'PAUS+COSMOS') & (Mi > Mmin) & (Mi < Mmax), Z + (1 + Z) * bias(Mi) * sigma[1], Z)
+                
+                print(f"PAUS  USING MIN {Mmin} AND MAX {Mmax}", flush = True)
                 
                 #Assign back to the deepfields file
                 data['Z'] = Z
@@ -1169,13 +1215,13 @@ if __name__ == '__main__':
                 return data
             
             tmp['bias_function'] = bias_function #Supply function as argument to class initialization dict
-            tmp['seed'] = seeds[i]
+            tmp['seed']          = seeds[i]
             ONE = ThreeSDirRedbiasRunner(**tmp) #Initialize class
             
             if args['FinalRunner']:
                 
-                dclass  = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
-                                        'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
+                dclass = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
+                                       'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
                 n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
                 n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
 
