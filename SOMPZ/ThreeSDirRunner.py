@@ -1159,7 +1159,7 @@ if __name__ == '__main__':
         for i in range(args['Nsamples']):
             
             mode_file = f"{os.environ['TMPDIR']}/redshift_file_mode{modes[i]}.csv"
-            if not os.path.file(mode_file):
+            if not os.path.isfile(mode_file):
                 cat, i_bcen, cosmos_bias, paus_cosmos_bias = generate_catalog_and_bias(mode = modes[i], deepcat_path = my_params['deep_catalog_path'])
                 print(cat, flush = True)
                 cat.to_csv(mode_file)
@@ -1179,7 +1179,7 @@ if __name__ == '__main__':
             
 
             tmp   = {k: v for k, v in my_params.items() if k not in ['njobs', 'sigma_ZP', 'Nsamples']}
-            tmp['redshift_catalog_path'] = f"{os.environ['TMPDIR']}/redshift_file.csv"
+            tmp['redshift_catalog_path'] = mode_file
 
             def bias_function(data):
                 
@@ -1258,6 +1258,9 @@ if __name__ == '__main__':
 
                 print("FOUND FILES! LOADING THEM NOW...")
                 files = sorted(glob.glob(my_params['output_dir'] + '/%s/nz_*.npy' % Mode))
+                if len(files) == 0:
+                    print("HAVE NO FILES IN MODE", Mode, "SO SKIPPING IT")
+                    continue
                 NZ    = np.concatenate([np.load(f) for f in files])
                 print(f"USING {len(files)} FILES. TOTAL OF {NZ.shape[0]} SAMPLES")
 

@@ -523,7 +523,7 @@ class BinRunner(ClassifyRunner):
     
     
     @timeit
-    def make_bins(self, balrog_classified_df, wide_classified_df, z_bins = [0.0, 0.3767, 0.6343, 0.860, 2.0]):
+    def make_bins(self, balrog_classified_df, wide_classified_df, z_bins = None):
         
         print("NOT USING Z_BINS")
         
