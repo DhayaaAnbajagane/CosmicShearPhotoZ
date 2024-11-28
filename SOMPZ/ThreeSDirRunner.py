@@ -40,13 +40,13 @@ class ThreeSDirRunner(BinRunner):
     def get_wide_catalog(self, wide_classified_df):
 
         path = self.wide_catalog_path
-        tmp  = f"{os.environ['TMPDIR']}/wide_weights.npy"
+        tmp  = f"{os.environ['TMPDIR']}/wide_weights.csv"
         Wide_df = pd.DataFrame()
 
         if os.path.isfile(tmp):
-            Wide_df['w']  = np.load(tmp)
-            Wide_df['id'] = wide_classified_df['id']
-            Wide_df['cell_wide_unsheared'] = wide_classified_df['cell']
+            Wide_df  = pd.read_csv(tmp)
+            #Wide_df['id'] = wide_classified_df['id']
+            #Wide_df['cell_wide_unsheared'] = wide_classified_df['cell']
 
         else:
             #We check balrog_contam even in data, but the result is always TRUE if its data
@@ -62,7 +62,9 @@ class ThreeSDirRunner(BinRunner):
                 
                 Wide_df['cell_wide_unsheared'] = Wide_df['cell'] #Rename so it works with Alex's code
 
-            np.save(tmp, Wide_df['w'].values)
+                assert np.all(np.isfinite(Wide_df['cell_wide_unsheared'].values)), f"Found {np.invert(np.isfinite(Wide_df['cell_wide_unsheared'].values)).sum()} bad cell assignments"
+
+            Wide_df.to_csv(tmp, index = False)
             
         return Wide_df
 
@@ -187,6 +189,7 @@ class ThreeSDirRunner(BinRunner):
             bins = self.make_bins(balrog_classified_df, wide_classified_df, self.z_bin_edges).flatten().astype(int) #Fixed bins for now
             np.save(bpath, bins)
         else:
+            print("FOUND EXISTING TOMO BINS, USING THOSE INSTEAD")
             bins = np.load(bpath)
 
         tomo_bins_wide_modal_even = [np.where(bins == i)[0] for i in range(4)]
