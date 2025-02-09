@@ -277,6 +277,25 @@ class TrainRunner:
         return Mask
     
     
+    def de_islandify(self, ra):
+
+        maxdec  = np.piecewise(ra, 
+                               [((310 < ra) & (ra <= 360)) | (ra < 50), (ra < 310) & (ra > 180)],
+                               [lambda ra: np.where((310 < ra) & (ra < 350), 
+                                                    3.5, 
+                                                    np.where(ra > 350, 
+                                                             (ra - 350) * (18 - 3.5)/(20) + 3.5, 
+                                                             (ra + 10)  * (18 - 3.5)/(20) + 3.5
+                                                             ) 
+                                                    ),
+                                lambda ra: np.where(ra < 225, 
+                                                    30 - (30 - 12)/(225 - 200) * (ra - 200), 
+                                                    12.),
+                                lambda ra: 40]
+                                )
+        
+        return maxdec
+    
     @timeit
     def get_foreground_mask(self, path):
 
@@ -285,12 +304,13 @@ class TrainRunner:
         with h5py.File(path, 'r') as f:
             FG_mask = f['FLAGS_FOREGROUND'][:] == 0
             
-            
             if 'RA' in f.keys():
-                Region_mask = np.invert(f['DEC'][:] > np.where(f['RA'][:] < 225, 30 - (30 - 12)/(225 - 200) * (f['RA'][:] - 200), 12.))
+                # Region_mask = np.invert(f['DEC'][:] > np.where(f['RA'][:] < 225, 30 - (30 - 12)/(225 - 200) * (f['RA'][:] - 200), 12.))
+                Region_mask = np.invert(f['DEC'][:] > self.de_islandify(f['RA'][:])) 
                 pix_assign  = hp.ang2pix(hp.npix2nside(Badcolor_map.size), f['RA'][:], f['DEC'][:], lonlat = True)
             else:
-                Region_mask = np.invert(f['true_dec'][:] > np.where(f['true_ra'][:] < 225, 30 - (30 - 12)/(225 - 200) * (f['true_ra'][:] - 200), 12.))
+                # Region_mask = np.invert(f['true_dec'][:] > np.where(f['true_ra'][:] < 225, 30 - (30 - 12)/(225 - 200) * (f['true_ra'][:] - 200), 12.))
+                Region_mask = np.invert(f['true_dec'][:] > self.de_islandify(f['true_ra'][:])) 
                 pix_assign  = hp.ang2pix(hp.npix2nside(Badcolor_map.size), f['true_ra'][:], f['true_dec'][:], lonlat = True)
                 
             Color_mask = Badcolor_map[pix_assign] == 0; del pix_assign
@@ -437,8 +457,9 @@ class ClassifyAllMcalRunner(ClassifyRunner):
 class BinRunner(ClassifyRunner):
     
     def __init__(self, seed, output_dir, deep_catalog_path, wide_catalog_path, balrog_catalog_path, 
-                 tomo_redshift_catalog_path, redshift_catalog_path, njobs = 10):
+                 tomo_redshift_catalog_path, redshift_catalog_path, njobs = 10, grid_filename = 'grid_quantities_20240827.npy'):
         
+        self.grid_filename         = grid_filename
         self.redshift_catalog_path = redshift_catalog_path
         self.tomo_redshift_catalog_path = tomo_redshift_catalog_path
         
@@ -447,7 +468,7 @@ class BinRunner(ClassifyRunner):
     @timeit
     def get_shear_weights(self, S2N, T_over_Tpsf):
         
-        path = os.path.dirname(__file__) + '/../grid_quantities_20240827.npy'
+        path = os.path.dirname(__file__) + f'/../{self.grid_filename}'
         res  = np.load(path)
         S    = res['SNR']
         T    = res['T_ratio']
@@ -830,10 +851,18 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241113/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241223_DR3_2/', 
+                 'grid_filename' : '/grid_quantities_20250206_DR3_2.npy'
                  }
     
     my_params = my_params | my_files
+
+    #Print args for debugging state
+    print('-------INPUT DICT ----------')
+    for p in my_params.keys():
+        print('%s : %s'%(p.upper(), my_params[p]))
+    print('-----------------------------')
+    print('-----------------------------')
     
     
     if args['TrainRunner']:

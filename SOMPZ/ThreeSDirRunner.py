@@ -18,7 +18,7 @@ from .Files import my_files
 from .DELVERunner import TrainRunner, BinRunner, timeit, DEEP_COLS
 from .RedshiftSampleRunner import generate_catalog_and_bias
 
-NSAMPLES_DEFAULT = 1e2
+NSAMPLES_DEFAULT = 1e3
 
 class ThreeSDirRunner(BinRunner):
     
@@ -1062,9 +1062,10 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241113/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241223_DR3_2/', 
                  'Nsamples' : args['Nsamples'],
-                 'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008])
+                 'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008]),
+                 'grid_filename' : '/grid_quantities_20250206_DR3_2.npy'
                 }
     
     my_params = my_params | my_files
@@ -1104,7 +1105,7 @@ if __name__ == '__main__':
                          
 
     if args['ZPOffsetRunner']:
-        tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path', 'redshift_catalog_path', 'tomo_redshift_catalog_path']}
+        tmp = {k: v for k, v in my_params.items() if k not in ['wide_catalog_path', 'redshift_catalog_path', 'tomo_redshift_catalog_path', 'grid_filename']}
         ONE = ZPOffsetRunner(**tmp)
         ONE.go()
         
@@ -1274,6 +1275,7 @@ if __name__ == '__main__':
                 np.savetxt(path + '/nz_priors_%s.txt' % Mode, summ)
                 
                 Likelihood_file = my_params['output_dir'] + '/%s/LnLikelihood_Fiducial_all.npy' % Mode
+                #Likelihood_file = my_params['output_dir'] + '/%s/LnLikelihood_Fiducial_HighUncert_Sys_all.npy' % Mode
                 if os.path.isfile(Likelihood_file):
                     
                     print("FOUND CALCULATED LIKELIHOOD! LOADING IT NOW...")
@@ -1297,6 +1299,5 @@ if __name__ == '__main__':
             
             
             
-            
-            
+
     
