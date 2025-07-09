@@ -1033,6 +1033,23 @@ class ThreeSDirRedbiasRunner(ThreeSDirRunner):
 
         return Deep_df
     
+class LensThreeSDirRedbiasRunner(ThreeSDirRedbiasRunner):
+
+    def get_shear_weights(self, S2N, T_over_Tpsf):
+
+        path = os.path.dirname(__file__) + f'/../{self.grid_filename}'
+        res  = np.load(path)
+        S    = res['SNR']
+        T    = res['T_ratio']
+        w    = res['weight']
+
+        #Have checked that this what DESY3 uses.
+        print("USING JUST WEIGHTS, NO RESPONSE", flush = True)
+        interp        = interpolate.NearestNDInterpolator((S, T), w,)
+        shear_weights = interp( (S2N, T_over_Tpsf) )
+
+        return shear_weights
+
 
 if __name__ == '__main__':
 
@@ -1045,6 +1062,8 @@ if __name__ == '__main__':
     my_parser.add_argument('--ThreeSDirRedbiasRunner', action = 'store_true', default = False, help = 'Run 3sDir module with z-bias')
     my_parser.add_argument('--FinalRunner',     action = 'store_true', default = False, help = 'Run 3sDir module with all uncertainties')
     
+    my_parser.add_argument('--LensFinalRunner', action = 'store_true', default = False, help = 'Run 3sDir module with all uncertainties')
+
     my_parser.add_argument('--Summarize',  action = 'store_true', default = False, help = 'Compress samples')
     
     my_parser.add_argument('--Nsamples', action = 'store', type = int, default = 5,       help = 'Number of ZP samples to make')
@@ -1062,10 +1081,10 @@ if __name__ == '__main__':
     
     my_params = {'seed': 42,
                  'njobs' : args['njobs'],
-                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241223_DR3_2/', 
+                 'output_dir' : '/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241113/', #'/project/chihway/dhayaa/DECADE/SOMPZ/Runs/20241223_DR3_2/', 
                  'Nsamples' : args['Nsamples'],
                  'sigma_ZP' : np.array([0.055, 0.005, 0.005, 0.005, 0.005, 0.008, 0.008, 0.008]),
-                 'grid_filename' : '/grid_quantities_20250206_DR3_2.npy'
+                 'grid_filename' : '/grid_quantities_20240827.npy', #'/grid_quantities_20250206_DR3_2.npy',
                 }
     
     my_params = my_params | my_files
@@ -1138,7 +1157,7 @@ if __name__ == '__main__':
             np.save(my_params['output_dir'] + '/ZP/nz_Samp%d.npy' % i, n_of_z)
             
             
-    if args['ThreeSDirRedbiasRunner'] | args['FinalRunner']:
+    if args['ThreeSDirRedbiasRunner'] | args['FinalRunner'] | args['LensFinalRunner']:
         
         bclass  = pd.DataFrame({'id'       : np.load(my_params['output_dir'] + '/BALROG_DATA_ID.npy'),
                                 'true_ra'  : np.load(my_params['output_dir'] + '/BALROG_DATA_TRUE_RA.npy'),
@@ -1152,7 +1171,9 @@ if __name__ == '__main__':
             os.makedirs(my_params['output_dir'] + '/Final/', exist_ok = True)
         elif args['ThreeSDirRedbiasRunner']:
             os.makedirs(my_params['output_dir'] + '/ZB/', exist_ok = True)
-            
+        elif args['LensFinalRunner']:
+            os.makedirs(my_params['output_dir'] + '/LensFinal/', exist_ok = True)
+
         rng   = np.random.default_rng(seed = my_params['seed'])
         seeds = rng.integers(0, 2**32, args['Nsamples'])
         modes = np.tile(np.arange(4), int(np.ceil(args['Nsamples']/4)))
@@ -1242,7 +1263,17 @@ if __name__ == '__main__':
 
                 np.save(my_params['output_dir'] + '/ZB/nz_Samp%d.npy' % i, n_of_z)
         
-        
+            
+            elif args['LensFinalRunner']:
+                ONE    = LensThreeSDirRedbiasRunner(**tmp)
+                dclass = pd.DataFrame({'ID'       : np.load(my_params['output_dir'] + '/DEEP_DATA_ID.npy'),
+                                       'cell'     : np.load(my_params['output_dir'] + '/ZP/collated_deep_classifier_Samp%d.npy' % i)})
+                n_of_z = ONE.make_3sdir_nz(bclass, dclass, wclass)
+                n_of_z = ONE.postprocess_nz(zbinsc, n_of_z)
+
+                np.save(my_params['output_dir'] + '/LensFinal/nz_Samp%d.npy' % i, n_of_z)
+
+    
     if args['Summarize']:
         
         from scipy import stats
@@ -1253,7 +1284,7 @@ if __name__ == '__main__':
         path = my_params['output_dir'] + '/Summary'
         os.makedirs(path, exist_ok = True)
         
-        for Mode in ['SVSN', 'ZP', 'ZB', 'Final']:
+        for Mode in ['SVSN', 'ZP', 'ZB', 'Final', 'LensFinal']:
             
             print('-----------------------')
             print("IN MODE", Mode)

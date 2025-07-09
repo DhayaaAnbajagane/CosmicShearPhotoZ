@@ -10,7 +10,7 @@ import pyccl as ccl
 class WZLikelihoodRunner(object):
     
     def __init__(self, Wz, z, zmsk, C_Wz, b_r, alpha_r, s_mu, s_sig, b_u, b_u_sig, alpha_u, alpha_u_sig,
-                 R_min, R_max, R_bins, Niter = 10, lnlk_tolerance = 0.01):
+                 R_min, R_max, R_bins, Niter = 10, lnlk_tolerance = 0.01, zfit = None):
         
         #Measurements from WZ
         self.Wz   = Wz
@@ -19,6 +19,8 @@ class WZLikelihoodRunner(object):
         self.C_Wz = C_Wz
         self.b_r  = b_r
         self.alpha_r = alpha_r
+        
+        self.zfit = self.zmsk if zfit is None else zfit
         
         self.R_min  = R_min
         self.R_max  = R_max
@@ -39,7 +41,7 @@ class WZLikelihoodRunner(object):
         self.q     = np.concatenate([s_mu,  [b_u,     alpha_u]])
         self.q_sig = np.concatenate([s_sig, [b_u_sig, alpha_u_sig]])
         
-        self.inv_C_Wz = np.linalg.inv(C_Wz)
+        self.inv_C_Wz = np.linalg.inv(C_Wz[self.zfit[self.zmsk]][:, self.zfit[self.zmsk]])
         self.inv_C_q  = 1 / self.q_sig**2 #This assumes the param priors are uncorrelated
         
         self.Niter = Niter
@@ -135,7 +137,7 @@ class WZLikelihoodRunner(object):
     
     
     #Computed following Appendix A of 2012.08569
-    def get_loglike(self, nz, verbose = False):
+    def get_loglike(self, nz, verbose = False, return_A = False):
         
         s0 = self.q[:self.order] * 1
         old_lnlk = np.inf
@@ -146,30 +148,31 @@ class WZLikelihoodRunner(object):
         for iterations in range(self.Niter):
             
             
+            m = self.zfit[self.zmsk]
             meansys = np.exp( np.sum(self.sysf * s0[:, None], axis = 0) ) #Mean systematic function curve
             wtheory = self.wDM[self.zmsk] * nz[self.zmsk] * self.b_r * meansys #No magnification here
             
             #Compute the A matrix, which is derivative of prediction (or sys funct) w.r.t sys params
             A = np.zeros([len(self.Wz), self.order + 2], dtype = float)
             
-            A[:, :self.order]    = self.sysf.T   * wtheory[:, None] #derivative of theory w.r.t sys func
-            A[:, self.order]     = self.b_r      * np.sum(m1 * nz)  #derivative w.r.t alpha_u
-            A[:, self.order + 1] = self.alpha_r  * np.sum(m2 * nz)  #derivative w.r.t b_u
+            A[:, :self.order]    = self.sysf.T  * wtheory[:, None] #derivative of theory w.r.t sys func
+            A[:, self.order]     = self.b_r     * (m1 * nz)[self.zmsk]  #derivative w.r.t alpha_u
+            A[:, self.order + 1] = self.alpha_r * (m2 * nz)[self.zmsk]  #derivative w.r.t b_u
             
             
             #Compute the constant vector, c. We don't use magnification params when
             #doing this. We linearlize only in sysfunc params
-            c = self.Wz - wtheory + A[:, :self.order] @ s0
+            c = self.Wz[m] - wtheory[m] + A[m, :self.order] @ s0
             
             
             #That's it, now compute the likelihood. This time also using magnification
-            delta = c - A @ q
+            delta = c - A[m] @ q
             cov   = np.einsum('ij,j,kj', A, self.q_sig**2, A) + self.C_Wz
             #lnlko = np.dot(delta, np.linalg.solve(cov, delta)) #Use solve for inverting the matrix. Y3 does it this way :P
             
             #B and d are just some names I make up for the vectors/matrices
-            B = A.T @ self.inv_C_Wz @ A + np.diag(1/self.q_sig**2)
-            d = A.T @ self.inv_C_Wz @ c + 1/self.q_sig**2 * self.q #Only use mean q for this evaluation
+            B = A[m].T @ self.inv_C_Wz @ A[m] + np.diag(1/self.q_sig**2)
+            d = A[m].T @ self.inv_C_Wz @ c    + 1/self.q_sig**2 * self.q #Only use mean q for this evaluation
             
             lnlk  = -0.5 * np.dot(d, np.linalg.solve(B, d)) #Minus so its the negative log likelihood
             det   = np.linalg.slogdet(B); assert det[0] == 1, f"Determinant is non-positive definite. Sign {det[0]}."
@@ -194,17 +197,33 @@ class WZLikelihoodRunner(object):
         wtheory = wtheory  + A[:, self.order]     * q[self.order] #Unknown bias
         wtheory = wtheory  + A[:, self.order + 1] * q[self.order + 1] #Unknown mag
         
-        res     = self.Wz - wtheory
-        chisq   = np.dot(res, np.linalg.solve(self.C_Wz, res))
+        factor  = self.wDM[self.zmsk] * self.b_r * np.exp( np.sum(self.sysf * s0[:, None], axis = 0) )
+        
+        try:
+            nz_cov  = self.C_nz[self.zmsk][:, self.zmsk]  * np.outer(factor, factor)
+        except:
+            print("NO COV FOUND. SETTING NZ COV TO 0")
+            nz_cov  = 0
             
-        return np.hstack([lnlk, chisq, q, wtheory])
+        res     = self.Wz - wtheory
+        chisq   = np.dot(res, np.linalg.solve(self.C_Wz + nz_cov, res))
+            
+        if return_A:
+            return np.hstack([lnlk, chisq, q, wtheory]), factor
+        else:
+            return np.hstack([lnlk, chisq, q, wtheory])
     
     
     def process(self, nz_array):
          
+        self.C_nz = np.cov(nz_array.T)
+        
+        self.get_loglike(nz_array[0])
+        
         N      = nz_array.shape[0]
         ncpu   = joblib.cpu_count()
         Njobs  = np.max([ncpu, N//1_000_000])
+        Njobs  = np.min([Njobs, N])
         Nsplit = int(np.ceil(N / ncpu))
         
         path   = os.environ['TMPDIR'] + '/nz_array_TMP.npy'
@@ -221,7 +240,7 @@ class WZLikelihoodRunner(object):
         r = [0] * ncpu
         with joblib.parallel_backend("loky"):
             jobs    = [joblib.delayed(subfunc)(i) for i in range(Njobs)]
-            outputs = joblib.Parallel(n_jobs = -1, verbose = 10, max_nbytes = None)(jobs)
+            outputs = joblib.Parallel(n_jobs = Njobs, verbose = 10, max_nbytes = None)(jobs)
             for o in outputs: r[o[0]] = o[1]
             r       = np.concatenate(r, axis = 0)
             
@@ -289,6 +308,7 @@ if __name__ == '__main__':
     a_ML = [2.43, 2.30, 3.75, 3.94, 3.56, 4.96]
     
     alpha_r = interpolate.interp1d(z_RM, a_RM, kind = 'cubic', fill_value = (a_RM[0], a_RM[-1]), bounds_error = False)
+#     alpha_r = interpolate.interp1d(z_ML, a_ML, kind = 'cubic', fill_value = (a_ML[0], a_ML[-1]), bounds_error = False)
     
     
     #HARDCODED VALUES; MEASUREMENTS OF WZ
@@ -304,8 +324,9 @@ if __name__ == '__main__':
     zbins   = np.arange(min_z,max_z+delta_z,delta_z)
     zbinsc  = zbins[:-1]+(zbins[1]-zbins[0])/2.
     zmsk    = np.zeros_like(zbinsc).astype(bool)
-#     zmsk[2:26] = True #Which parts of n(z) have Wz measurements to them.
-    zmsk[2:42] = True #Which parts of n(z) have Wz measurements to them.
+    N = 40
+    zmsk[2:2+N] = True #Which parts of n(z) have Wz measurements to them.
+#     zmsk[2:42] = True #Which parts of n(z) have Wz measurements to them.
 
     
     #Loop back to interpolate the z_bins and add the surface area factor (alpha = -2)
@@ -320,13 +341,13 @@ if __name__ == '__main__':
     res = []
     for i in range(4):
         
-#         WZ     = WZ_data['w_ur'][i][:24]
-#         C_Wz   = WZ_data['Cw_ur'][i][:24].T[:24]
-#         b_r    = WZ_data['b_z'][i][:24]
+        WZ     = WZ_data['w_ur'][i][:N]
+        C_Wz   = WZ_data['Cw_ur'][i][:N].T[:N]
+        b_r    = WZ_data['b_z'][i][:N]
         
-        WZ     = WZ_data['w_ur'][i]
-        C_Wz   = WZ_data['Cw_ur'][i]
-        b_r    = WZ_data['b_z'][i]
+#         WZ     = WZ_data['w_ur'][i]
+#         C_Wz   = WZ_data['Cw_ur'][i]
+#         b_r    = WZ_data['b_z'][i]
         
         #Hardcoded hartlap factor, for now....
         Njk   = 600

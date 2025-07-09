@@ -418,8 +418,8 @@ if __name__ == '__main__':
     
     if args['DECADE']:
 
-        with h5py.File('/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 'r') as f:
-
+        #with h5py.File('/project/chihway/data/decade/metacal_gold_combined_20240209.hdf', 'r') as f:
+        with h5py.File('/project/chihway/data/decade/metacal_gold_combined_20241003.hdf', 'r') as f:
             ra      = f['RA'][:]
             dec     = f['DEC'][:]
             w       = f['mcal_g_w_noshear'][:]
